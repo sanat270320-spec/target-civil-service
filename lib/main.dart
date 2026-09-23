@@ -121,7 +121,6 @@ class _LoginFlowScreenState extends State<LoginFlowScreen> {
   final examCtrl = TextEditingController(text: "WBCS / WBPSC");
   final imgCtrl = TextEditingController();
   String generatedOtp = "1234";
-  bool isLoading = false;
 
   void sendOtp() {
     if (phoneCtrl.text.trim().length != 10) {
@@ -139,7 +138,7 @@ class _LoginFlowScreenState extends State<LoginFlowScreen> {
     if (otpCtrl.text.trim() == generatedOtp) {
       setState(() => step = 3);
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("ভুল ওটিপি! পুনরায় চেষ্টা করুন")));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("ভুল ওটিপি! পুনরায় চেষ্টা করুন")));
     }
   }
 
@@ -148,57 +147,48 @@ class _LoginFlowScreenState extends State<LoginFlowScreen> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("আপনার সম্পূর্ণ নাম লিখুন")));
       return;
     }
-    setState(() => isLoading = true);
 
-    try {
-      final userCountRes = await http.get(Uri.parse('$firebaseUrl/users.json?shallow=true'));
-      int currentRoll = 1;
-      if (userCountRes.statusCode == 200 && userCountRes.body != 'null') {
-        Map<String, dynamic> allUsers = jsonDecode(userCountRes.body);
-        currentRoll = allUsers.length + 1;
-      }
+    final prefs = await SharedPreferences.getInstance();
+    int currentRoll = (prefs.getInt('u_roll') ?? 0) + 1;
 
-      final profile = {
-        'name': nameCtrl.text.trim(),
-        'phone': phoneCtrl.text.trim(),
-        'exam': examCtrl.text.trim(),
-        'roll': currentRoll,
-        'image': imgCtrl.text.trim(),
-        'score': 0,
-        'isPremium': false,
-        'streak': 1,
-        'registeredAt': DateTime.now().toIso8601String(),
-      };
+    final profile = {
+      'name': nameCtrl.text.trim(),
+      'phone': phoneCtrl.text.trim(),
+      'exam': examCtrl.text.trim(),
+      'roll': currentRoll,
+      'image': imgCtrl.text.trim(),
+      'score': 0,
+      'isPremium': false,
+      'streak': 1,
+      'registeredAt': DateTime.now().toIso8601String(),
+    };
 
-      await http.put(
-        Uri.parse('$firebaseUrl/users/${phoneCtrl.text.trim()}.json'),
-        body: jsonEncode(profile),
-      );
+    // লোকাল ফোনে আগে তথ্য সংরক্ষণ করে সরাসরি সফলভাবে ভেতরে ঢুকিয়ে দেবে
+    await prefs.setString('u_name', profile['name'] as String);
+    await prefs.setString('u_phone', profile['phone'] as String);
+    await prefs.setString('u_exam', profile['exam'] as String);
+    await prefs.setInt('u_roll', currentRoll);
+    await prefs.setString('u_image', profile['image'] as String);
+    await prefs.setBool('u_premium', false);
+    await prefs.setInt('u_streak', 1);
 
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('u_name', profile['name'] as String);
-      await prefs.setString('u_phone', profile['phone'] as String);
-      await prefs.setString('u_exam', profile['exam'] as String);
-      await prefs.setInt('u_roll', currentRoll);
-      await prefs.setString('u_image', profile['image'] as String);
-      await prefs.setBool('u_premium', false);
-      await prefs.setInt('u_streak', 1);
+    // ব্যাকগ্রাউন্ডে ক্লাউডে পাঠাবে
+    http.put(
+      Uri.parse('$firebaseUrl/users/${phoneCtrl.text.trim()}.json'),
+      body: jsonEncode(profile),
+    ).catchError((_) {});
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (_) => AddaRootScreen(
-            userData: profile,
-            toggleTheme: widget.toggleTheme,
-            isDarkMode: widget.isDarkMode,
-          ),
+    // কোনো এরর না দেখিয়ে সরাসরি হোম স্ক্রিনে প্রবেশ
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AddaRootScreen(
+          userData: profile,
+          toggleTheme: widget.toggleTheme,
+          isDarkMode: widget.isDarkMode,
         ),
-      );
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("ইন্টারনেট সংযোগ পরীক্ষা করুন")));
-    } finally {
-      setState(() => isLoading = false);
-    }
+      ),
+    );
   }
 
   @override
@@ -273,10 +263,8 @@ class _LoginFlowScreenState extends State<LoginFlowScreen> {
                   height: 48,
                   child: ElevatedButton(
                     style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD32F2F)),
-                    onPressed: isLoading ? null : completeRegistration,
-                    child: isLoading
-                        ? const CircularProgressIndicator(color: Colors.white)
-                        : const Text("প্রবেশ করুন", style: TextStyle(color: Colors.white, fontSize: 16)),
+                    onPressed: completeRegistration,
+                    child: const Text("প্রবেশ করুন", style: TextStyle(color: Colors.white, fontSize: 16)),
                   ),
                 ),
               ]
@@ -305,7 +293,6 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
   final String adminPass = "1234";
 
   List<Map<String, dynamic>> questions = [];
-  List<Map<String, dynamic>> currentAffairs = [];
   List<Map<String, dynamic>> studyNotes = [];
   List<Map<String, dynamic>> liveClasses = [];
   List<Map<String, dynamic>> registeredUsers = [];
@@ -318,7 +305,6 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
   List<String> bookmarkedIds = [];
   List<String> studentNotes = [];
   List<Map<String, dynamic>> studyTodos = [];
-  bool isLoading = true;
 
   int pollVotesA = 48;
   int pollVotesB = 14;
@@ -369,17 +355,15 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
 
   Future<void> fetchAllData() async {
     try {
-      final qRes = await http.get(Uri.parse('$firebaseUrl/questions.json'));
-      final caRes = await http.get(Uri.parse('$firebaseUrl/current_affairs.json'));
-      final snRes = await http.get(Uri.parse('$firebaseUrl/study_notes.json'));
-      final lcRes = await http.get(Uri.parse('$firebaseUrl/live_classes.json'));
-      final uRes = await http.get(Uri.parse('$firebaseUrl/users.json'));
-      final acRes = await http.get(Uri.parse('$firebaseUrl/achievers.json'));
-      final jobRes = await http.get(Uri.parse('$firebaseUrl/job_alerts.json'));
-      final dRes = await http.get(Uri.parse('$firebaseUrl/doubts.json'));
-      final fcRes = await http.get(Uri.parse('$firebaseUrl/flashcards.json'));
-      final prRes = await http.get(Uri.parse('$firebaseUrl/payment_requests.json'));
-      final noticeRes = await http.get(Uri.parse('$firebaseUrl/app_notice.json'));
+      final qRes = await http.get(Uri.parse('$firebaseUrl/questions.json')).timeout(const Duration(seconds: 4));
+      final snRes = await http.get(Uri.parse('$firebaseUrl/study_notes.json')).timeout(const Duration(seconds: 4));
+      final lcRes = await http.get(Uri.parse('$firebaseUrl/live_classes.json')).timeout(const Duration(seconds: 4));
+      final uRes = await http.get(Uri.parse('$firebaseUrl/users.json')).timeout(const Duration(seconds: 4));
+      final jobRes = await http.get(Uri.parse('$firebaseUrl/job_alerts.json')).timeout(const Duration(seconds: 4));
+      final dRes = await http.get(Uri.parse('$firebaseUrl/doubts.json')).timeout(const Duration(seconds: 4));
+      final fcRes = await http.get(Uri.parse('$firebaseUrl/flashcards.json')).timeout(const Duration(seconds: 4));
+      final prRes = await http.get(Uri.parse('$firebaseUrl/payment_requests.json')).timeout(const Duration(seconds: 4));
+      final noticeRes = await http.get(Uri.parse('$firebaseUrl/app_notice.json')).timeout(const Duration(seconds: 4));
 
       List<Map<String, dynamic>> parseMap(http.Response res) {
         List<Map<String, dynamic>> list = [];
@@ -396,11 +380,9 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
 
       setState(() {
         questions = parseMap(qRes);
-        currentAffairs = parseMap(caRes);
         studyNotes = parseMap(snRes);
         liveClasses = parseMap(lcRes);
         registeredUsers = parseMap(uRes);
-        achievers = parseMap(acRes);
         jobAlerts = parseMap(jobRes);
         doubts = parseMap(dRes);
         flashcards = parseMap(fcRes);
@@ -408,11 +390,8 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
         if (noticeRes.statusCode == 200 && noticeRes.body != 'null') {
           appNotice = jsonDecode(noticeRes.body)['text'] ?? appNotice;
         }
-        isLoading = false;
       });
-    } catch (e) {
-      setState(() => isLoading = false);
-    }
+    } catch (_) {}
   }
 
   Future<void> pushCloudData(String path, Map<String, dynamic> data) async {
@@ -473,7 +452,7 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => DefaultTabController(
-        length: 8,
+        length: 7,
         child: Container(
           height: MediaQuery.of(context).size.height * 0.90,
           padding: const EdgeInsets.all(14),
@@ -489,7 +468,6 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
                   Tab(text: "ছাত্র তালিকা (SMS)"),
                   Tab(text: "দ্বিভাষিক কুইজ"),
                   Tab(text: "ফ্ল্যাশ কার্ড"),
-                  Tab(text: "ডাউট উত্তর"),
                   Tab(text: "ইউটিউব ক্লাস"),
                   Tab(text: "পিডিএফ নোটস"),
                 ],
@@ -502,9 +480,8 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
                     _adminUserSection(),
                     _adminQuestionSection(),
                     _adminFlashcardSection(),
-                    _adminDoubtsSection(),
-                    _adminGenericSection("live_classes", liveClasses, "নতুন ইউটিউব ক্লাস যোগ", "ক্লাসের নাম", "শিক্ষক / তারিখ", "YouTube লিঙ্ক"),
-                    _adminGenericSection("study_notes", studyNotes, "নতুন পিডিএফ নোটস যোগ", "নোটসের শিরোনাম", "অধ্যায় / বিবরণ", "পিডিএফ লিঙ্ক"),
+                    _adminGenericSection("live_classes", liveClasses, "নতুন ক্লাস যোগ", "ক্লাসের নাম", "শিক্ষক / তারিখ", "YouTube লিঙ্ক"),
+                    _adminGenericSection("study_notes", studyNotes, "নতুন নোটস যোগ", "শিরোনাম", "বিবরণ", "পিডিএফ লিঙ্ক"),
                   ],
                 ),
               )
@@ -533,7 +510,7 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
                 body: jsonEncode({'text': nCtrl.text.trim()}),
               );
               fetchAllData();
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("নোটিশ ব্রডকাস্ট সফল হয়েছে!")));
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("নোটিশ আপডেট হয়েছে!")));
             },
             child: const Text("সবার ফোনে আপডেট করুন", style: TextStyle(color: Colors.white)),
           )
@@ -631,63 +608,6 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
     );
   }
 
-  Widget _adminDoubtsSection() {
-    return Column(
-      children: [
-        Expanded(
-          child: doubts.isEmpty
-              ? const Center(child: Text("কোনো শিক্ষার্থীর ডাউট নেই!"))
-              : ListView.builder(
-                  itemCount: doubts.length,
-                  itemBuilder: (ctx, i) => Card(
-                    child: ListTile(
-                      title: Text(doubts[i]['question'] ?? ''),
-                      subtitle: Text("শিক্ষার্থী: ${doubts[i]['userName']}\nউত্তর: ${doubts[i]['answer'] ?? 'উত্তর দেওয়া হয়নি'}"),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            icon: const Icon(Icons.reply, color: Colors.blue),
-                            onPressed: () {
-                              final ansCtrl = TextEditingController();
-                              showDialog(
-                                context: context,
-                                builder: (ctx) => AlertDialog(
-                                  title: const Text("ডাউটের উত্তর দিন"),
-                                  content: TextField(controller: ansCtrl, maxLines: 3, decoration: const InputDecoration(labelText: "উত্তর লিখুন")),
-                                  actions: [
-                                    ElevatedButton(
-                                      onPressed: () async {
-                                        if (ansCtrl.text.isNotEmpty) {
-                                          await http.patch(
-                                            Uri.parse('$firebaseUrl/doubts/${doubts[i]['id']}.json'),
-                                            body: jsonEncode({'answer': ansCtrl.text.trim()}),
-                                          );
-                                          fetchAllData();
-                                          Navigator.pop(ctx);
-                                        }
-                                      },
-                                      child: const Text("সাবমিট করুন"),
-                                    )
-                                  ],
-                                ),
-                              );
-                            },
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.delete, color: Colors.red),
-                            onPressed: () => removeCloudData("doubts", doubts[i]['id']),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-        ),
-      ],
-    );
-  }
-
   Widget _adminQuestionSection() {
     return Column(
       children: [
@@ -699,7 +619,7 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
                   itemBuilder: (ctx, i) => Card(
                     child: ListTile(
                       title: Text(questions[i]['question'] ?? ''),
-                      subtitle: Text("En: ${questions[i]['questionEn'] ?? 'N/A'}\nউত্তর: বিকল্প ${(questions[i]['correctIndex'] ?? 0) + 1}"),
+                      subtitle: Text("বিকল্প ${(questions[i]['correctIndex'] ?? 0) + 1}"),
                       trailing: IconButton(
                         icon: const Icon(Icons.delete, color: Colors.red),
                         onPressed: () => removeCloudData("questions", questions[i]['id']),
@@ -711,7 +631,7 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
         ElevatedButton.icon(
           style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD32F2F), minimumSize: const Size(double.infinity, 45)),
           icon: const Icon(Icons.add, color: Colors.white),
-          label: const Text("নতুন দ্বিভাষিক প্রশ্ন যোগ করুন", style: TextStyle(color: Colors.white)),
+          label: const Text("নতুন প্রশ্ন যোগ করুন", style: TextStyle(color: Colors.white)),
           onPressed: _showAddQuestionDialog,
         )
       ],
@@ -751,7 +671,7 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
                   onChanged: (v) => setF(() => cIdx = v!),
                   decoration: const InputDecoration(labelText: "সঠিক বিকল্প"),
                 ),
-                TextField(controller: exp, decoration: const InputDecoration(labelText: "ব্যাখ্যা / Explanation")),
+                TextField(controller: exp, decoration: const InputDecoration(labelText: "ব্যাখ্যা")),
               ],
             ),
           ),
@@ -879,7 +799,7 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
                 child: ListTile(
                   leading: CircleAvatar(backgroundColor: const Color(0xFFD32F2F), child: Text("${u['roll'] ?? (i + 1)}", style: const TextStyle(color: Colors.white))),
                   title: Text(u['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
-                  subtitle: Text("ফোন: +91 ${u['phone']}\nস্ট্যাটাস: ${u['isPremium'] == true ? '⭐ প্রিমিয়াম মেম্বার' : 'ফ্রি মেম্বার'}"),
+                  subtitle: Text("ফোন: +91 ${u['phone']}\nস্ট্যাটাস: ${u['isPremium'] == true ? '⭐ প্রিমিয়াম' : 'ফ্রি'}"),
                 ),
               );
             },
@@ -902,26 +822,24 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator(color: Color(0xFFD32F2F)))
-          : IndexedStack(
-              index: _selectedIndex,
-              children: [
-                _buildHomeDashboard(),
-                LiveClassesScreen(classes: liveClasses),
-                SubjectExamScreen(questions: questions, userPhone: widget.userData['phone'], onBookmark: toggleBookmark, bookmarkedIds: bookmarkedIds),
-                StudyNotesScreen(notes: studyNotes),
-                DoubtForumScreen(doubts: doubts, userName: widget.userData['name'], firebaseUrl: firebaseUrl, onRefresh: fetchAllData),
-                LeaderboardScreen(users: registeredUsers),
-                JobAlertsScreen(jobs: jobAlerts),
-                FlashcardScreen(cards: flashcards),
-                SyllabusScreen(),
-                StudentNotebookScreen(notes: studentNotes, onSave: saveStudentNotes),
-                StudyPlannerScreen(todos: studyTodos, onSave: saveTodos),
-                PaymentScreen(userName: widget.userData['name'], phone: widget.userData['phone'], firebaseUrl: firebaseUrl),
-                _buildProfileTab(),
-              ],
-            ),
+      body: IndexedStack(
+        index: _selectedIndex,
+        children: [
+          _buildHomeDashboard(),
+          LiveClassesScreen(classes: liveClasses),
+          SubjectExamScreen(questions: questions, userPhone: widget.userData['phone'], onBookmark: toggleBookmark, bookmarkedIds: bookmarkedIds),
+          StudyNotesScreen(notes: studyNotes),
+          DoubtForumScreen(doubts: doubts, userName: widget.userData['name'], firebaseUrl: firebaseUrl, onRefresh: fetchAllData),
+          LeaderboardScreen(users: registeredUsers),
+          JobAlertsScreen(jobs: jobAlerts),
+          FlashcardScreen(cards: flashcards),
+          SyllabusScreen(),
+          StudentNotebookScreen(notes: studentNotes, onSave: saveStudentNotes),
+          StudyPlannerScreen(todos: studyTodos, onSave: saveTodos),
+          PaymentScreen(userName: widget.userData['name'], phone: widget.userData['phone'], firebaseUrl: firebaseUrl),
+          _buildProfileTab(),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: Colors.green.shade700,
         icon: const Icon(Icons.chat, color: Colors.white),
@@ -994,7 +912,6 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // স্ক্রোলিং নোটিশ বার
                 Container(
                   width: double.infinity,
                   color: Colors.amber.shade100,
@@ -1009,8 +926,6 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
                     ],
                   ),
                 ),
-
-                // WBCS কাউন্টডাউন ব্যানার
                 Container(
                   margin: const EdgeInsets.all(12),
                   padding: const EdgeInsets.all(14),
@@ -1040,33 +955,6 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
                     ],
                   ),
                 ),
-
-                // অল বেঙ্গল লাইভ স্কলারশিপ টেস্ট
-                Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(color: Colors.blue.shade900, borderRadius: BorderRadius.circular(10)),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: const [
-                          Text("🏆 অল বেঙ্গল লাইভ স্কলারশিপ টেস্ট", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                          SizedBox(height: 2),
-                          Text("প্রতি রবিবার সকাল ১০টায় | রাজ্য র‍্যাঙ্ক প্রকাশ", style: TextStyle(color: Colors.white70, fontSize: 11)),
-                        ],
-                      ),
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(backgroundColor: Colors.amber.shade700),
-                        child: const Text("অংশ নিন", style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12)),
-                        onPressed: () => setState(() => _selectedIndex = 2),
-                      )
-                    ],
-                  ),
-                ),
-
-                // পোল অফ দ্য ডে
                 Container(
                   margin: const EdgeInsets.all(12),
                   padding: const EdgeInsets.all(14),
@@ -1110,13 +998,11 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
                     ],
                   ),
                 ),
-
                 const Padding(
                   padding: EdgeInsets.symmetric(horizontal: 14.0),
                   child: Text("STUDY MATERIAL & TOOLS", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey)),
                 ),
                 const SizedBox(height: 10),
-
                 GridView.count(
                   crossAxisCount: 4,
                   shrinkWrap: true,
@@ -1201,7 +1087,6 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
   }
 }
 
-// ইন-অ্যাপ পার্সোনাল নোটপ্যাড
 class StudentNotebookScreen extends StatefulWidget {
   final List<String> notes;
   final Function(List<String>) onSave;
@@ -1226,7 +1111,7 @@ class _StudentNotebookScreenState extends State<StudentNotebookScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text("নতুন নোট লিখুন"),
-        content: TextField(controller: nCtrl, maxLines: 4, decoration: const InputDecoration(labelText: "পড়ার গুরুত্বপূর্ণ তথ্য বা সূত্র লিখুন")),
+        content: TextField(controller: nCtrl, maxLines: 4, decoration: const InputDecoration(labelText: "পড়ার সূত্র বা তথ্য লিখুন")),
         actions: [
           ElevatedButton(
             onPressed: () {
@@ -1248,7 +1133,7 @@ class _StudentNotebookScreenState extends State<StudentNotebookScreen> {
     return Scaffold(
       appBar: AppBar(title: const Text("আমার পার্সোনাল নোটপ্যাড"), backgroundColor: const Color(0xFFD32F2F)),
       body: localNotes.isEmpty
-          ? const Center(child: Text("কোনো নোট সেভ করা নেই! নিচের বাটনে চাপ দিয়ে নতুন নোট লিখুন।"))
+          ? const Center(child: Text("কোনো নোট নেই! নিচের বাটনে চাপ দিয়ে নতুন নোট লিখুন।"))
           : ListView.builder(
               padding: const EdgeInsets.all(12),
               itemCount: localNotes.length,
@@ -1274,7 +1159,6 @@ class _StudentNotebookScreenState extends State<StudentNotebookScreen> {
   }
 }
 
-// ডেইলি স্টাডি টার্গেট / To-Do Planner
 class StudyPlannerScreen extends StatefulWidget {
   final List<Map<String, dynamic>> todos;
   final Function(List<Map<String, dynamic>>) onSave;
@@ -1319,7 +1203,7 @@ class _StudyPlannerScreenState extends State<StudyPlannerScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("ডেইলি স্টাডি প্ল্যানার (Target)"), backgroundColor: const Color(0xFFD32F2F)),
+      appBar: AppBar(title: const Text("ডেইলি স্টাডি প্ল্যানার"), backgroundColor: const Color(0xFFD32F2F)),
       body: localTodos.isEmpty
           ? const Center(child: Text("আজকের কোনো পড়ার টার্গেট সেট করা হয়নি!"))
           : ListView.builder(
@@ -1348,7 +1232,6 @@ class _StudyPlannerScreenState extends State<StudyPlannerScreen> {
   }
 }
 
-// দ্বিভাষিক ও ওএমআর মোড সহ পরীক্ষা ইঞ্জিন
 class QuizPlayScreen extends StatefulWidget {
   final List<Map<String, dynamic>> questions;
   final String userPhone;
@@ -1397,10 +1280,12 @@ class _QuizPlayScreenState extends State<QuizPlayScreen> {
 
   void submitExam() async {
     timer?.cancel();
-    await http.patch(
-      Uri.parse("https://target-civil-service-default-rtdb.firebaseio.com/users/${widget.userPhone}.json"),
-      body: jsonEncode({'score': score.toInt()}),
-    );
+    try {
+      await http.patch(
+        Uri.parse("https://target-civil-service-default-rtdb.firebaseio.com/users/${widget.userPhone}.json"),
+        body: jsonEncode({'score': score.toInt()}),
+      );
+    } catch (_) {}
 
     int totalTimeSpent = 600 - remainingSeconds;
     double accuracy = (correctCount + wrongCount) > 0 ? (correctCount / (correctCount + wrongCount)) * 100 : 0.0;
@@ -1459,7 +1344,7 @@ class _QuizPlayScreenState extends State<QuizPlayScreen> {
           ),
           IconButton(
             icon: Icon(isOmrMode ? Icons.view_list : Icons.circle_outlined, color: Colors.white),
-            tooltip: "OMR শিট মোড",
+            tooltip: "OMR মোড",
             onPressed: () => setState(() => isOmrMode = !isOmrMode),
           ),
           IconButton(
@@ -1479,7 +1364,6 @@ class _QuizPlayScreenState extends State<QuizPlayScreen> {
             Text(questionText ?? '', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
             const SizedBox(height: 18),
 
-            // OMR বাবলে স্পর্শ মোড অথবা সাধারণ অপশন মোড
             if (isOmrMode) ...[
               const Text("OMR বাবল স্পর্শ করে পূরণ করুন:", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.deepOrange)),
               const SizedBox(height: 10),
@@ -1566,7 +1450,6 @@ class _QuizPlayScreenState extends State<QuizPlayScreen> {
   }
 }
 
-// সহায়ক স্ক্রিনসমূহ
 class SubjectExamScreen extends StatelessWidget {
   final List<Map<String, dynamic>> questions;
   final String userPhone;
@@ -1629,7 +1512,7 @@ class DoubtForumScreen extends StatelessWidget {
     final dCtrl = TextEditingController();
 
     return Scaffold(
-      appBar: AppBar(title: const Text("ডাউট ফোরাম (প্রশ্নোত্তর)"), backgroundColor: const Color(0xFFD32F2F)),
+      appBar: AppBar(title: const Text("ডাউট ফোরাম"), backgroundColor: const Color(0xFFD32F2F)),
       body: doubts.isEmpty
           ? const Center(child: Text("কোনো ডাউট নেই! নিচের বাটন চেপে প্রশ্ন করুন।"))
           : ListView.builder(
@@ -1681,7 +1564,7 @@ class DoubtForumScreen extends StatelessWidget {
             context: context,
             builder: (ctx) => AlertDialog(
               title: const Text("আপনার ডাউট লিখুন"),
-              content: TextField(controller: dCtrl, maxLines: 3, decoration: const InputDecoration(labelText: "প্রশ্নটি বিস্তারিত লিখুন")),
+              content: TextField(controller: dCtrl, maxLines: 3, decoration: const InputDecoration(labelText: "প্রশ্নটি লিখুন")),
               actions: [
                 ElevatedButton(
                   onPressed: () async {
@@ -1835,7 +1718,7 @@ class PaymentScreen extends StatelessWidget {
                         'date': DateTime.now().toString(),
                       }),
                     );
-                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("অনুরোধ পাঠানো হয়েছে! অ্যাডমিন যাচাই করে চালু করে দেবে।")));
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("অনুরোধ পাঠানো হয়েছে! অ্যাডমিন চালু করে দেবে।")));
                     Navigator.pop(context);
                   }
                 },
