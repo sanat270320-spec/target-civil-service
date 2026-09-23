@@ -1,8 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   runApp(TargetCivilServiceApp());
 }
 
@@ -12,17 +17,237 @@ class TargetCivilServiceApp extends StatelessWidget {
     return MaterialApp(
       title: 'Target Civil Service',
       theme: ThemeData(
-        primaryColor: Color(0xFFD32F2F),
-        scaffoldBackgroundColor: Color(0xFFF5F6F8),
+        primaryColor: const Color(0xFFD32F2F),
+        scaffoldBackgroundColor: const Color(0xFFF5F6F8),
         fontFamily: 'Roboto',
       ),
-      home: AddaRootScreen(),
+      home: AuthCheckScreen(),
       debugShowCheckedModeBanner: false,
     );
   }
 }
 
+class AuthCheckScreen extends StatefulWidget {
+  @override
+  _AuthCheckScreenState createState() => _AuthCheckScreenState();
+}
+
+class _AuthCheckScreenState extends State<AuthCheckScreen> {
+  bool isChecking = true;
+  bool isLoggedIn = false;
+  Map<String, dynamic> userData = {};
+
+  @override
+  void initState() {
+    super.initState();
+    checkUser();
+  }
+
+  Future<void> checkUser() async {
+    final prefs = await SharedPreferences.getInstance();
+    final phone = prefs.getString('u_phone');
+    if (phone != null && phone.isNotEmpty) {
+      setState(() {
+        isLoggedIn = true;
+        userData = {
+          'name': prefs.getString('u_name') ?? 'শিক্ষার্থী',
+          'phone': phone,
+          'exam': prefs.getString('u_exam') ?? 'WBCS',
+          'roll': prefs.getInt('u_roll') ?? 1,
+          'image': prefs.getString('u_image') ?? '',
+        };
+        isChecking = false;
+      });
+    } else {
+      setState(() => isChecking = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (isChecking) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator(color: Color(0xFFD32F2F))));
+    }
+    return isLoggedIn ? AddaRootScreen(userData: userData) : LoginFlowScreen();
+  }
+}
+
+class LoginFlowScreen extends StatefulWidget {
+  @override
+  _LoginFlowScreenState createState() => _LoginFlowScreenState();
+}
+
+class _LoginFlowScreenState extends State<LoginFlowScreen> {
+  final String firebaseUrl = "https://target-civil-service-default-rtdb.firebaseio.com";
+  int step = 1;
+  final phoneCtrl = TextEditingController();
+  final otpCtrl = TextEditingController();
+  final nameCtrl = TextEditingController();
+  final examCtrl = TextEditingController(text: "WBCS / WBPSC");
+  final imgCtrl = TextEditingController();
+  String generatedOtp = "1234";
+  bool isLoading = false;
+
+  void sendOtp() {
+    if (phoneCtrl.text.trim().length != 10) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("সঠিক ১০ সংখ্যার মোবাইল নম্বর লিখুন")));
+      return;
+    }
+    setState(() {
+      generatedOtp = "1234";
+      step = 2;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("আপনার ওটিপি কোড হলো: $generatedOtp")));
+  }
+
+  void verifyOtp() {
+    if (otpCtrl.text.trim() == generatedOtp) {
+      setState(() => step = 3);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("ভুল ওটিপি! পুনরায় চেষ্টা করুন")));
+    }
+  }
+
+  Future<void> completeRegistration() async {
+    if (nameCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("আপনার সম্পূর্ণ নাম লিখুন")));
+      return;
+    }
+    setState(() => isLoading = true);
+
+    try {
+      final userCountRes = await http.get(Uri.parse('$firebaseUrl/users.json?shallow=true'));
+      int currentRoll = 1;
+      if (userCountRes.statusCode == 200 && userCountRes.body != 'null') {
+        Map<String, dynamic> allUsers = jsonDecode(userCountRes.body);
+        currentRoll = allUsers.length + 1;
+      }
+
+      final profile = {
+        'name': nameCtrl.text.trim(),
+        'phone': phoneCtrl.text.trim(),
+        'exam': examCtrl.text.trim(),
+        'roll': currentRoll,
+        'image': imgCtrl.text.trim(),
+        'score': 0,
+        'registeredAt': DateTime.now().toIso8601String(),
+      };
+
+      await http.put(
+        Uri.parse('$firebaseUrl/users/${phoneCtrl.text.trim()}.json'),
+        body: jsonEncode(profile),
+      );
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('u_name', profile['name'] as String);
+      await prefs.setString('u_phone', profile['phone'] as String);
+      await prefs.setString('u_exam', profile['exam'] as String);
+      await prefs.setInt('u_roll', currentRoll);
+      await prefs.setString('u_image', profile['image'] as String);
+
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => AddaRootScreen(userData: profile)),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("ইন্টারনেট সংযোগ পরীক্ষা করুন")));
+    } finally {
+      setState(() => isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 30),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(color: const Color(0xFFD32F2F).withOpacity(0.1), shape: BoxShape.circle),
+                child: const Icon(Icons.school, size: 45, color: Color(0xFFD32F2F)),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                step == 1 ? "মোবাইল নম্বর লিখুন" : (step == 2 ? "ওটিপি যাচাইকরণ" : "শিক্ষার্থী প্রোফাইল"),
+                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                step == 1 ? "লগইন করতে আপনার ফোন নম্বর দিন" : (step == 2 ? "আপনার স্ক্রিনে আসা ৪ সংখ্যার কোড লিখুন" : "আপনার বিবরণ পূরণ করুন"),
+                style: const TextStyle(color: Colors.black54, fontSize: 13),
+              ),
+              const SizedBox(height: 24),
+              if (step == 1) ...[
+                TextField(
+                  controller: phoneCtrl,
+                  keyboardType: TextInputType.phone,
+                  maxLength: 10,
+                  decoration: const InputDecoration(labelText: "মোবাইল নম্বর", prefixText: "+91 ", border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD32F2F)),
+                    onPressed: sendOtp,
+                    child: const Text("ওটিপি পাঠান", style: TextStyle(color: Colors.white, fontSize: 16)),
+                  ),
+                ),
+              ] else if (step == 2) ...[
+                TextField(
+                  controller: otpCtrl,
+                  keyboardType: TextInputType.number,
+                  maxLength: 4,
+                  decoration: const InputDecoration(labelText: "৪ সংখ্যার ওটিপি", border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD32F2F)),
+                    onPressed: verifyOtp,
+                    child: const Text("ওটিপি যাচাই করুন", style: TextStyle(color: Colors.white, fontSize: 16)),
+                  ),
+                ),
+              ] else ...[
+                TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: "আপনার সম্পূর্ণ নাম", border: OutlineInputBorder())),
+                const SizedBox(height: 14),
+                TextField(controller: examCtrl, decoration: const InputDecoration(labelText: "টার্গেট পরীক্ষা", border: OutlineInputBorder())),
+                const SizedBox(height: 14),
+                TextField(controller: imgCtrl, decoration: const InputDecoration(labelText: "প্রোফাইল ছবির লিঙ্ক (ঐচ্ছিক)", border: OutlineInputBorder())),
+                const SizedBox(height: 18),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD32F2F)),
+                    onPressed: isLoading ? null : completeRegistration,
+                    child: isLoading
+                        ? const CircularProgressIndicator(color: Colors.white)
+                        : const Text("প্রবেশ করুন", style: TextStyle(color: Colors.white, fontSize: 16)),
+                  ),
+                ),
+              ]
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class AddaRootScreen extends StatefulWidget {
+  final Map<String, dynamic> userData;
+  const AddaRootScreen({required this.userData});
+
   @override
   _AddaRootScreenState createState() => _AddaRootScreenState();
 }
@@ -30,49 +255,55 @@ class AddaRootScreen extends StatefulWidget {
 class _AddaRootScreenState extends State<AddaRootScreen> {
   int _selectedIndex = 0;
   final String firebaseUrl = "https://target-civil-service-default-rtdb.firebaseio.com";
-  
-  // গোপন অ্যাডমিন লগইন তথ্য
-  final String adminId = "sanat";
-  final String adminPass = "1234";
+  final String adminId = "WBCS";
+  final String adminPass = "8436";
 
   List<Map<String, dynamic>> questions = [];
   List<Map<String, dynamic>> currentAffairs = [];
+  List<Map<String, dynamic>> studyNotes = [];
+  List<Map<String, dynamic>> liveClasses = [];
+  List<Map<String, dynamic>> registeredUsers = [];
+  List<Map<String, dynamic>> achievers = [];
+  List<Map<String, dynamic>> jobAlerts = [];
   bool isLoading = true;
 
   @override
   void initState() {
     super.initState();
-    fetchCloudData();
+    fetchAllData();
   }
 
-  Future<void> fetchCloudData() async {
+  Future<void> fetchAllData() async {
     try {
       final qRes = await http.get(Uri.parse('$firebaseUrl/questions.json'));
       final caRes = await http.get(Uri.parse('$firebaseUrl/current_affairs.json'));
+      final snRes = await http.get(Uri.parse('$firebaseUrl/study_notes.json'));
+      final lcRes = await http.get(Uri.parse('$firebaseUrl/live_classes.json'));
+      final uRes = await http.get(Uri.parse('$firebaseUrl/users.json'));
+      final acRes = await http.get(Uri.parse('$firebaseUrl/achievers.json'));
+      final jobRes = await http.get(Uri.parse('$firebaseUrl/job_alerts.json'));
 
-      List<Map<String, dynamic>> loadedQ = [];
-      if (qRes.statusCode == 200 && qRes.body != 'null') {
-        Map<String, dynamic> data = jsonDecode(qRes.body);
-        data.forEach((key, val) {
-          var item = Map<String, dynamic>.from(val);
-          item['id'] = key;
-          loadedQ.add(item);
-        });
-      }
-
-      List<Map<String, dynamic>> loadedCA = [];
-      if (caRes.statusCode == 200 && caRes.body != 'null') {
-        Map<String, dynamic> data = jsonDecode(caRes.body);
-        data.forEach((key, val) {
-          var item = Map<String, dynamic>.from(val);
-          item['id'] = key;
-          loadedCA.add(item);
-        });
+      List<Map<String, dynamic>> parseMap(http.Response res) {
+        List<Map<String, dynamic>> list = [];
+        if (res.statusCode == 200 && res.body != 'null') {
+          Map<String, dynamic> data = jsonDecode(res.body);
+          data.forEach((key, val) {
+            var item = Map<String, dynamic>.from(val);
+            item['id'] = key;
+            list.add(item);
+          });
+        }
+        return list;
       }
 
       setState(() {
-        questions = loadedQ;
-        currentAffairs = loadedCA;
+        questions = parseMap(qRes);
+        currentAffairs = parseMap(caRes);
+        studyNotes = parseMap(snRes);
+        liveClasses = parseMap(lcRes);
+        registeredUsers = parseMap(uRes);
+        achievers = parseMap(acRes);
+        jobAlerts = parseMap(jobRes);
         isLoading = false;
       });
     } catch (e) {
@@ -80,27 +311,25 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
     }
   }
 
-  Future<void> addQuestionToCloud(Map<String, dynamic> q) async {
-    await http.post(Uri.parse('$firebaseUrl/questions.json'), body: jsonEncode(q));
-    fetchCloudData();
+  Future<void> pushCloudData(String path, Map<String, dynamic> data) async {
+    await http.post(Uri.parse('$firebaseUrl/$path.json'), body: jsonEncode(data));
+    fetchAllData();
   }
 
-  Future<void> deleteQuestionFromCloud(String id) async {
-    await http.delete(Uri.parse('$firebaseUrl/questions/$id.json'));
-    fetchCloudData();
+  Future<void> removeCloudData(String path, String id) async {
+    await http.delete(Uri.parse('$firebaseUrl/$path/$id.json'));
+    fetchAllData();
   }
 
-  Future<void> addCAToCloud(Map<String, dynamic> ca) async {
-    await http.post(Uri.parse('$firebaseUrl/current_affairs.json'), body: jsonEncode(ca));
-    fetchCloudData();
+  void openWhatsAppSupport() async {
+    const phone = "+916295411997";
+    final url = Uri.parse("https://wa.me/$phone?text=নমস্কার, টার্গেট সিভিল সার্ভিস অ্যাপ সম্পর্কে জানতে চাই।");
+    if (await canLaunchUrl(url)) {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+    }
   }
 
-  Future<void> deleteCAFromCloud(String id) async {
-    await http.delete(Uri.parse('$firebaseUrl/current_affairs/$id.json'));
-    fetchCloudData();
-  }
-
-  // সিক্রেট অ্যাডমিন উইন্ডো
+  // সিক্রেট অ্যাডমিন লগইন (৩ সেকেন্ড লং প্রেসে ওপেন হবে)
   void showAdminLogin() {
     final userCtrl = TextEditingController();
     final passCtrl = TextEditingController();
@@ -108,106 +337,70 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text("সিস্টেম নিয়ন্ত্রণ", style: TextStyle(color: Color(0xFFD32F2F), fontWeight: FontWeight.bold, fontSize: 16)),
+        title: const Text("অ্যাডমিন ক্লাউড কন্ট্রোল", style: TextStyle(color: Color(0xFFD32F2F), fontWeight: FontWeight.bold)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: userCtrl, decoration: InputDecoration(labelText: "আইডি", prefixIcon: Icon(Icons.person))),
-            SizedBox(height: 10),
-            TextField(controller: passCtrl, obscureText: true, decoration: InputDecoration(labelText: "পাসওয়ার্ড", prefixIcon: Icon(Icons.lock))),
+            TextField(controller: userCtrl, decoration: const InputDecoration(labelText: "আইডি")),
+            TextField(controller: passCtrl, obscureText: true, decoration: const InputDecoration(labelText: "পাসওয়ার্ড")),
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text("বাতিল")),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("বাতিল")),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Color(0xFFD32F2F)),
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD32F2F)),
             onPressed: () {
               if (userCtrl.text.trim() == adminId && passCtrl.text.trim() == adminPass) {
                 Navigator.pop(ctx);
-                openAdminHub();
+                openMasterAdminHub();
               } else {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("অনুমতি নেই!")));
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("অনুমতি নেই!")));
               }
             },
-            child: Text("প্রবেশ", style: TextStyle(color: Colors.white)),
+            child: const Text("প্রবেশ", style: TextStyle(color: Colors.white)),
           )
         ],
       ),
     );
   }
 
-  void openAdminHub() {
+  // মাস্টার অ্যাডমিন কন্ট্রোল প্যানেল
+  void openMasterAdminHub() {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => DefaultTabController(
-        length: 2,
+        length: 7,
         child: Container(
-          height: MediaQuery.of(context).size.height * 0.85,
-          padding: EdgeInsets.all(16),
+          height: MediaQuery.of(context).size.height * 0.90,
+          padding: const EdgeInsets.all(14),
           child: Column(
             children: [
-              TabBar(
+              const TabBar(
+                isScrollable: true,
                 labelColor: Color(0xFFD32F2F),
                 indicatorColor: Color(0xFFD32F2F),
-                tabs: [Tab(text: "কুইজ তথ্য"), Tab(text: "কারেন্ট অ্যাফেয়ার্স")],
+                tabs: [
+                  Tab(text: "ছাত্র তালিকা (SMS)"),
+                  Tab(text: "মক কুইজ কন্ট্রোল"),
+                  Tab(text: "ইউটিউব ক্লাস"),
+                  Tab(text: "পিডিএফ নোটস"),
+                  Tab(text: "চাকরির বিজ্ঞপ্তি"),
+                  Tab(text: "কৃতী শিক্ষার্থী"),
+                  Tab(text: "কারেন্ট অ্যাফেয়ার্স"),
+                ],
               ),
               Expanded(
                 child: TabBarView(
                   children: [
-                    Column(
-                      children: [
-                        Expanded(
-                          child: questions.isEmpty
-                              ? Center(child: Text("কোনো তথ্য নেই!"))
-                              : ListView.builder(
-                                  itemCount: questions.length,
-                                  itemBuilder: (ctx, i) => Card(
-                                    child: ListTile(
-                                      title: Text(questions[i]['question'] ?? ''),
-                                      trailing: IconButton(
-                                        icon: Icon(Icons.delete, color: Colors.red),
-                                        onPressed: () => deleteQuestionFromCloud(questions[i]['id']),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                        ),
-                        ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(backgroundColor: Color(0xFFD32F2F), minimumSize: Size(double.infinity, 45)),
-                          icon: Icon(Icons.add, color: Colors.white),
-                          label: Text("নতুন কুইজ তৈরি করুন", style: TextStyle(color: Colors.white)),
-                          onPressed: showAddQuestionDialog,
-                        )
-                      ],
-                    ),
-                    Column(
-                      children: [
-                        Expanded(
-                          child: currentAffairs.isEmpty
-                              ? Center(child: Text("কোনো তথ্য নেই!"))
-                              : ListView.builder(
-                                  itemCount: currentAffairs.length,
-                                  itemBuilder: (ctx, i) => Card(
-                                    child: ListTile(
-                                      title: Text(currentAffairs[i]['title'] ?? ''),
-                                      trailing: IconButton(
-                                        icon: Icon(Icons.delete, color: Colors.red),
-                                        onPressed: () => deleteCAFromCloud(currentAffairs[i]['id']),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                        ),
-                        ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(backgroundColor: Color(0xFFD32F2F), minimumSize: Size(double.infinity, 45)),
-                          icon: Icon(Icons.add_photo_alternate, color: Colors.white),
-                          label: Text("নতুন পোস্ট তৈরি করুন", style: TextStyle(color: Colors.white)),
-                          onPressed: showAddCADialog,
-                        )
-                      ],
-                    ),
+                    _adminUserSection(),
+                    _adminQuestionSection(),
+                    _adminGenericSection("live_classes", liveClasses, "নতুন ইউটিউব ক্লাস যোগ করুন", "ক্লাসের নাম / বিষয়", "তারিখ / শিক্ষকের নাম", "YouTube লিংক"),
+                    _adminGenericSection("study_notes", studyNotes, "নতুন পিডিএফ / নোটস যোগ করুন", "নোটসের বিষয়", "অধ্যায় / বিবরণ", "পিডিএফ ডাউনলোড লিংক (Drive/Web)"),
+                    _adminGenericSection("job_alerts", jobAlerts, "নতুন চাকরির বিজ্ঞপ্তি যোগ করুন", "পদের নাম (যেমন: WBCS 2026)", "যোগ্যতা ও শেষ তারিখ", "বিজ্ঞপ্তি / আবেদন লিংক"),
+                    _adminAchieverSection(),
+                    _adminGenericSection("current_affairs", currentAffairs, "নতুন কারেন্ট অ্যাফেয়ার্স পোস্ট করুন", "শিরোনাম", "বিস্তারিত বিবরণ", "ছবির URL লিঙ্ক"),
                   ],
                 ),
               )
@@ -218,7 +411,38 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
     );
   }
 
-  void showAddQuestionDialog() {
+  // প্রশ্ন যোগ করার আলাদা সেকশন (বিকল্প ও সঠিক উত্তর সহ)
+  Widget _adminQuestionSection() {
+    return Column(
+      children: [
+        Expanded(
+          child: questions.isEmpty
+              ? const Center(child: Text("কোনো কুইজ প্রশ্ন নেই!"))
+              : ListView.builder(
+                  itemCount: questions.length,
+                  itemBuilder: (ctx, i) => Card(
+                    child: ListTile(
+                      title: Text(questions[i]['question'] ?? ''),
+                      subtitle: Text("সঠিক উত্তর: বিকল্প ${(questions[i]['correctIndex'] ?? 0) + 1}"),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        onPressed: () => removeCloudData("questions", questions[i]['id']),
+                      ),
+                    ),
+                  ),
+                ),
+        ),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD32F2F), minimumSize: const Size(double.infinity, 45)),
+          icon: const Icon(Icons.add, color: Colors.white),
+          label: const Text("নতুন মক টেস্ট প্রশ্ন যোগ করুন", style: TextStyle(color: Colors.white)),
+          onPressed: _showAddQuestionDialog,
+        )
+      ],
+    );
+  }
+
+  void _showAddQuestionDialog() {
     final q = TextEditingController(), o1 = TextEditingController(), o2 = TextEditingController(), o3 = TextEditingController(), o4 = TextEditingController(), exp = TextEditingController();
     int cIdx = 0;
 
@@ -226,22 +450,22 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setF) => AlertDialog(
-          title: Text("নতুন কুইজ তথ্য"),
+          title: const Text("নতুন মক কুইজ প্রশ্ন"),
           content: SingleChildScrollView(
             child: Column(
               children: [
-                TextField(controller: q, decoration: InputDecoration(labelText: "প্রশ্ন")),
-                TextField(controller: o1, decoration: InputDecoration(labelText: "বিকল্প ১")),
-                TextField(controller: o2, decoration: InputDecoration(labelText: "বিকল্প ২")),
-                TextField(controller: o3, decoration: InputDecoration(labelText: "বিকল্প ৩")),
-                TextField(controller: o4, decoration: InputDecoration(labelText: "বিকল্প ৪")),
+                TextField(controller: q, decoration: const InputDecoration(labelText: "প্রশ্ন")),
+                TextField(controller: o1, decoration: const InputDecoration(labelText: "বিকল্প ১")),
+                TextField(controller: o2, decoration: const InputDecoration(labelText: "বিকল্প ২")),
+                TextField(controller: o3, decoration: const InputDecoration(labelText: "বিকল্প ৩")),
+                TextField(controller: o4, decoration: const InputDecoration(labelText: "বিকল্প ৪")),
                 DropdownButtonFormField<int>(
                   value: cIdx,
                   items: [0, 1, 2, 3].map((i) => DropdownMenuItem(value: i, child: Text("বিকল্প ${i + 1}"))).toList(),
                   onChanged: (v) => setF(() => cIdx = v!),
-                  decoration: InputDecoration(labelText: "সঠিক বিকল্প কোনটি?"),
+                  decoration: const InputDecoration(labelText: "সঠিক বিকল্প কোনটি?"),
                 ),
-                TextField(controller: exp, decoration: InputDecoration(labelText: "উত্তরের ব্যাখ্যা")),
+                TextField(controller: exp, decoration: const InputDecoration(labelText: "ব্যাখ্যা")),
               ],
             ),
           ),
@@ -249,16 +473,16 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
             ElevatedButton(
               onPressed: () {
                 if (q.text.isNotEmpty && o1.text.isNotEmpty) {
-                  addQuestionToCloud({
-                    'question': q.text,
-                    'options': [o1.text, o2.text, o3.text, o4.text],
+                  pushCloudData("questions", {
+                    'question': q.text.trim(),
+                    'options': [o1.text.trim(), o2.text.trim(), o3.text.trim(), o4.text.trim()],
                     'correctIndex': cIdx,
-                    'explanation': exp.text
+                    'explanation': exp.text.trim(),
                   });
                   Navigator.pop(ctx);
                 }
               },
-              child: Text("সংরক্ষণ করুন"),
+              child: const Text("ক্লাউডে সেভ করুন"),
             )
           ],
         ),
@@ -266,70 +490,234 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
     );
   }
 
-  void showAddCADialog() {
-    final t = TextEditingController(), d = TextEditingController(), img = TextEditingController(), desc = TextEditingController();
+  // যেকোনো সাধারণ সেকশন কন্ট্রোল করার উইজেট
+  Widget _adminGenericSection(String path, List<Map<String, dynamic>> items, String btnTitle, String label1, String label2, String label3) {
+    return Column(
+      children: [
+        Expanded(
+          child: items.isEmpty
+              ? const Center(child: Text("কোনো তথ্য নেই!"))
+              : ListView.builder(
+                  itemCount: items.length,
+                  itemBuilder: (ctx, i) => Card(
+                    child: ListTile(
+                      title: Text(items[i]['title'] ?? ''),
+                      subtitle: Text(items[i]['subtitle'] ?? items[i]['description'] ?? ''),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        onPressed: () => removeCloudData(path, items[i]['id']),
+                      ),
+                    ),
+                  ),
+                ),
+        ),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD32F2F), minimumSize: const Size(double.infinity, 45)),
+          icon: const Icon(Icons.add, color: Colors.white),
+          label: Text(btnTitle, style: const TextStyle(color: Colors.white)),
+          onPressed: () => _showAddGenericDialog(path, label1, label2, label3),
+        )
+      ],
+    );
+  }
+
+  void _showAddGenericDialog(String path, String label1, String label2, String label3) {
+    final t1 = TextEditingController();
+    final t2 = TextEditingController();
+    final t3 = TextEditingController();
 
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text("নতুন তথ্য সংযোজন"),
-        content: SingleChildScrollView(
-          child: Column(
-            children: [
-              TextField(controller: t, decoration: InputDecoration(labelText: "শিরোনাম")),
-              TextField(controller: d, decoration: InputDecoration(labelText: "তারিখ")),
-              TextField(controller: img, decoration: InputDecoration(labelText: "ছবির URL লিঙ্ক")),
-              TextField(controller: desc, decoration: InputDecoration(labelText: "বিস্তারিত তথ্য"), maxLines: 3),
-            ],
-          ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: t1, decoration: InputDecoration(labelText: label1)),
+            TextField(controller: t2, decoration: InputDecoration(labelText: label2)),
+            TextField(controller: t3, decoration: InputDecoration(labelText: label3)),
+          ],
         ),
         actions: [
           ElevatedButton(
             onPressed: () {
-              if (t.text.isNotEmpty) {
-                addCAToCloud({
-                  'title': t.text,
-                  'date': d.text.isEmpty ? 'আজকের আপডেট' : d.text,
-                  'imageUrl': img.text.trim(),
-                  'description': desc.text
+              if (t1.text.isNotEmpty) {
+                pushCloudData(path, {
+                  'title': t1.text.trim(),
+                  'subtitle': t2.text.trim(),
+                  'description': t2.text.trim(),
+                  'url': t3.text.trim(),
+                  'imageUrl': t3.text.trim(),
+                  'date': DateTime.now().toString().substring(0, 10),
                 });
                 Navigator.pop(ctx);
               }
             },
-            child: Text("পোস্ট করুন"),
+            child: const Text("পোস্ট করুন"),
           )
         ],
       ),
     );
   }
 
+  Widget _adminAchieverSection() {
+    return Column(
+      children: [
+        Expanded(
+          child: achievers.isEmpty
+              ? const Center(child: Text("কোনো তথ্য নেই!"))
+              : ListView.builder(
+                  itemCount: achievers.length,
+                  itemBuilder: (ctx, i) => Card(
+                    child: ListTile(
+                      leading: CircleAvatar(backgroundImage: NetworkImage(achievers[i]['image'] ?? '')),
+                      title: Text(achievers[i]['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text("পদ: ${achievers[i]['job']} | রোল: #${achievers[i]['roll']}"),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.delete, color: Colors.red),
+                        onPressed: () => removeCloudData("achievers", achievers[i]['id']),
+                      ),
+                    ),
+                  ),
+                ),
+        ),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.amber.shade800, minimumSize: const Size(double.infinity, 45)),
+          icon: const Icon(Icons.emoji_events, color: Colors.white),
+          label: const Text("সফল শিক্ষার্থী যোগ করুন", style: TextStyle(color: Colors.white)),
+          onPressed: _showAddAchieverDialog,
+        )
+      ],
+    );
+  }
+
+  void _showAddAchieverDialog() {
+    final nCtrl = TextEditingController();
+    final jCtrl = TextEditingController();
+    final rCtrl = TextEditingController();
+    final imgCtrl = TextEditingController();
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("সফল শিক্ষার্থীর বিবরণ"),
+        content: SingleChildScrollView(
+          child: Column(
+            children: [
+              TextField(controller: nCtrl, decoration: const InputDecoration(labelText: "নাম")),
+              TextField(controller: jCtrl, decoration: const InputDecoration(labelText: "যে চাকরি পেয়েছে (যেমন: WBCS Group A)")),
+              TextField(controller: rCtrl, decoration: const InputDecoration(labelText: "রোল নম্বর")),
+              TextField(controller: imgCtrl, decoration: const InputDecoration(labelText: "ছবির URL লিঙ্ক")),
+            ],
+          ),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () {
+              if (nCtrl.text.isNotEmpty) {
+                pushCloudData("achievers", {
+                  'name': nCtrl.text.trim(),
+                  'job': jCtrl.text.trim(),
+                  'roll': rCtrl.text.trim(),
+                  'image': imgCtrl.text.trim(),
+                });
+                Navigator.pop(ctx);
+              }
+            },
+            child: const Text("সংরক্ষণ করুন"),
+          )
+        ],
+      ),
+    );
+  }
+
+  Widget _adminUserSection() {
+    return Column(
+      children: [
+        Container(
+          margin: const EdgeInsets.symmetric(vertical: 10),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: Colors.blue.shade50, borderRadius: BorderRadius.circular(8)),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text("মোট রেজিস্টার্ড ছাত্র: ${registeredUsers.length}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.blue.shade700),
+                icon: const Icon(Icons.copy, size: 16, color: Colors.white),
+                label: const Text("সব নম্বর কপি", style: TextStyle(color: Colors.white, fontSize: 12)),
+                onPressed: () {
+                  if (registeredUsers.isEmpty) return;
+                  String allPhones = registeredUsers.map((u) => u['phone']?.toString() ?? '').where((p) => p.isNotEmpty).join(',');
+                  Clipboard.setData(ClipboardData(text: allPhones));
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("সবগুলো নম্বর ক্লিপবোর্ডে কপি হয়েছে!")));
+                },
+              )
+            ],
+          ),
+        ),
+        Expanded(
+          child: registeredUsers.isEmpty
+              ? const Center(child: Text("কোনো শিক্ষার্থী এখনও রেজিস্টার করেনি!"))
+              : ListView.builder(
+                  itemCount: registeredUsers.length,
+                  itemBuilder: (ctx, i) {
+                    var u = registeredUsers[i];
+                    return Card(
+                      child: ListTile(
+                        leading: CircleAvatar(backgroundColor: const Color(0xFFD32F2F), child: Text("${u['roll'] ?? (i + 1)}", style: const TextStyle(color: Colors.white))),
+                        title: Text(u['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text("ফোন: +91 ${u['phone']}\nটার্গেট: ${u['exam']}"),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear();
+    Navigator.pushAndRemoveUntil(context, MaterialPageRoute(builder: (_) => LoginFlowScreen()), (r) => false);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: isLoading
-          ? Center(child: CircularProgressIndicator(color: Color(0xFFD32F2F)))
+          ? const Center(child: CircularProgressIndicator(color: Color(0xFFD32F2F)))
           : IndexedStack(
               index: _selectedIndex,
               children: [
                 _buildHomeDashboard(),
-                QuizPlayScreen(questions: questions),
-                CAScreen(currentAffairs: currentAffairs),
-                _buildSimplePlaceholder("স্টাডি মেটেরিয়াল"),
+                LiveClassesScreen(classes: liveClasses),
+                QuizPlayScreen(questions: questions, userPhone: widget.userData['phone']),
+                StudyNotesScreen(notes: studyNotes),
+                LeaderboardScreen(users: registeredUsers),
+                JobAlertsScreen(jobs: jobAlerts),
                 _buildProfileTab(),
               ],
             ),
+      floatingActionButton: FloatingActionButton.extended(
+        backgroundColor: Colors.green.shade700,
+        icon: const Icon(Icons.chat, color: Colors.white),
+        label: const Text("WhatsApp সাপোর্ট", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        onPressed: openWhatsAppSupport,
+      ),
       bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _selectedIndex,
-        onTap: (index) => setState(() => _selectedIndex = index),
+        currentIndex: _selectedIndex > 4 ? 0 : _selectedIndex,
+        onTap: (i) => setState(() => _selectedIndex = i),
         type: BottomNavigationBarType.fixed,
-        selectedItemColor: Color(0xFFD32F2F),
+        selectedItemColor: const Color(0xFFD32F2F),
         unselectedItemColor: Colors.grey,
-        items: [
+        items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home), label: "Home"),
-          BottomNavigationBarItem(icon: Icon(Icons.assignment), label: "Tests"),
-          BottomNavigationBarItem(icon: Icon(Icons.menu_book), label: "Current"),
-          BottomNavigationBarItem(icon: Icon(Icons.video_library), label: "Study"),
-          BottomNavigationBarItem(icon: Icon(Icons.person), label: "My Zone"),
+          BottomNavigationBarItem(icon: Icon(Icons.live_tv), label: "Live"),
+          BottomNavigationBarItem(icon: Icon(Icons.timer), label: "Tests"),
+          BottomNavigationBarItem(icon: Icon(Icons.picture_as_pdf), label: "Notes"),
+          BottomNavigationBarItem(icon: Icon(Icons.leaderboard), label: "Rank"),
         ],
       ),
     );
@@ -337,81 +725,47 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
 
   Widget _buildHomeDashboard() {
     return RefreshIndicator(
-      onRefresh: fetchCloudData,
+      onRefresh: fetchAllData,
       child: CustomScrollView(
         slivers: [
           SliverAppBar(
             floating: true,
             pinned: true,
-            backgroundColor: Color(0xFFD32F2F),
+            backgroundColor: const Color(0xFFD32F2F),
             title: Row(
               children: [
                 CircleAvatar(
                   radius: 18,
+                  backgroundImage: widget.userData['image'].toString().isNotEmpty ? NetworkImage(widget.userData['image']) : null,
                   backgroundColor: Colors.white24,
-                  child: Icon(Icons.school, color: Colors.white, size: 20),
+                  child: widget.userData['image'].toString().isEmpty ? const Icon(Icons.person, color: Colors.white, size: 20) : null,
                 ),
-                SizedBox(width: 8),
-                // গোপন অ্যাক্সেস: এই বক্সে ৩ সেকেন্ড লং প্রেস করলেই অ্যাডমিন খুলবে
+                const SizedBox(width: 8),
+                // ৩ সেকেন্ড চেপে ধরলে অ্যাডমিন ওপেন হবে
                 GestureDetector(
                   onLongPress: showAdminLogin,
                   child: Container(
-                    padding: EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: Colors.black26,
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: Row(
-                      children: [
-                        Text("WBCS / West Bengal Exams ▾", style: TextStyle(fontSize: 12, color: Colors.white, fontWeight: FontWeight.bold)),
-                      ],
-                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(16)),
+                    child: Text("${widget.userData['exam']} ▾", style: const TextStyle(fontSize: 12, color: Colors.white, fontWeight: FontWeight.bold)),
                   ),
                 ),
               ],
             ),
             actions: [
-              Container(
-                margin: EdgeInsets.symmetric(vertical: 12),
-                padding: EdgeInsets.symmetric(horizontal: 8),
-                decoration: BoxDecoration(color: Colors.amber.shade700, borderRadius: BorderRadius.circular(12)),
-                child: Row(
-                  children: [
-                    Icon(Icons.monetization_on, color: Colors.white, size: 16),
-                    SizedBox(width: 4),
-                    Text("50", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12)),
-                  ],
-                ),
-              ),
-              IconButton(icon: Icon(Icons.refresh, color: Colors.white), onPressed: fetchCloudData),
+              IconButton(icon: const Icon(Icons.notifications_active, color: Colors.white), onPressed: () => setState(() => _selectedIndex = 5)),
+              IconButton(icon: const Icon(Icons.refresh, color: Colors.white), onPressed: fetchAllData),
             ],
           ),
-
           SliverToBoxAdapter(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Padding(
-                  padding: const EdgeInsets.all(12.0),
-                  child: Container(
-                    padding: EdgeInsets.symmetric(horizontal: 12),
-                    height: 44,
-                    decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(8), boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)]),
-                    child: Row(
-                      children: [
-                        Icon(Icons.search, color: Colors.grey),
-                        SizedBox(width: 8),
-                        Text("সার্চ মক টেস্ট, কারেন্ট অ্যাফেয়ার্স...", style: TextStyle(color: Colors.grey, fontSize: 13)),
-                      ],
-                    ),
-                  ),
-                ),
-
                 Container(
-                  margin: EdgeInsets.symmetric(horizontal: 12),
-                  padding: EdgeInsets.all(16),
+                  margin: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(colors: [Color(0xFFD32F2F), Color(0xFFFF5252)]),
+                    gradient: const LinearGradient(colors: [Color(0xFFD32F2F), Color(0xFFFF5252)]),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Row(
@@ -420,101 +774,88 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Container(
-                              padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(color: Colors.amber, borderRadius: BorderRadius.circular(4)),
-                              child: Text("TARGET 2026", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black)),
-                            ),
-                            SizedBox(height: 6),
-                            Text("WBCS প্রিলিমস ও মেনস সম্পূর্ণ গাইড", style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold)),
-                            SizedBox(height: 4),
-                            Text("ডেইলি মক টেস্ট ও ফ্রি নোটস", style: TextStyle(color: Colors.white70, fontSize: 11)),
+                            Text("নমস্কার, ${widget.userData['name']}!", style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 4),
+                            Text("রোল নং: #${widget.userData['roll']} | লক্ষ্য: ${widget.userData['exam']}", style: const TextStyle(color: Colors.white70, fontSize: 12)),
                           ],
                         ),
                       ),
-                      Icon(Icons.military_tech, size: 55, color: Colors.white),
+                      const Icon(Icons.military_tech, size: 50, color: Colors.white),
                     ],
                   ),
                 ),
 
-                SizedBox(height: 16),
+                if (achievers.isNotEmpty) ...[
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 14.0, vertical: 4.0),
+                    child: Text("কৃতী শিক্ষার্থী (HALL OF FAME)", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
+                  ),
+                  Container(
+                    height: 125,
+                    margin: const EdgeInsets.symmetric(vertical: 6),
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      itemCount: achievers.length,
+                      itemBuilder: (ctx, i) {
+                        var ach = achievers[i];
+                        return Container(
+                          width: 210,
+                          margin: const EdgeInsets.only(right: 10),
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(colors: [Colors.amber.shade50, Colors.white]),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.amber.shade300),
+                          ),
+                          child: Row(
+                            children: [
+                              CircleAvatar(
+                                radius: 28,
+                                backgroundImage: (ach['image'] ?? '').toString().isNotEmpty ? NetworkImage(ach['image']) : null,
+                                child: (ach['image'] ?? '').toString().isEmpty ? const Icon(Icons.person) : null,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(ach['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12), maxLines: 1),
+                                    Text(ach['job'] ?? '', style: const TextStyle(color: Colors.green, fontSize: 11, fontWeight: FontWeight.bold), maxLines: 1),
+                                    Text("Roll #${ach['roll']}", style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                                  ],
+                                ),
+                              )
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
 
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12.0),
-                  child: Text("STUDY MATERIAL", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey.shade700, letterSpacing: 0.5)),
+                const SizedBox(height: 10),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 14.0),
+                  child: Text("STUDY MATERIAL & EXAM ZONE", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey)),
                 ),
-                SizedBox(height: 10),
-
+                const SizedBox(height: 10),
                 GridView.count(
                   crossAxisCount: 4,
                   shrinkWrap: true,
-                  physics: NeverScrollableScrollPhysics(),
-                  padding: EdgeInsets.symmetric(horizontal: 8),
-                  mainAxisSpacing: 8,
-                  crossAxisSpacing: 8,
+                  physics: const NeverScrollableScrollPhysics(),
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
                   children: [
-                    _buildIconItem(Icons.quiz, "ডেইলি কুইজ", Colors.orange, () => Navigator.push(context, MaterialPageRoute(builder: (_) => QuizPlayScreen(questions: questions)))),
-                    _buildIconItem(Icons.newspaper, "কারেন্ট অ্যাফেয়ার্স", Colors.blue, () => Navigator.push(context, MaterialPageRoute(builder: (_) => CAScreen(currentAffairs: currentAffairs)))),
-                    _buildIconItem(Icons.menu_book, "স্টাডি নোটস", Colors.green, () {}),
-                    _buildIconItem(Icons.assignment, "টেস্ট সিরিজ", Colors.deepOrange, () {}),
-                    _buildIconItem(Icons.ondemand_video, "ভিডিও ক্লাস", Colors.redAccent, () {}),
-                    _buildIconItem(Icons.work, "চাকরির খবর", Colors.teal, () {}),
-                    _buildIconItem(Icons.book, "ই-বুকস", Colors.purple, () {}),
-                    _buildIconItem(Icons.pie_chart, "পারফরম্যান্স", Colors.indigo, () {}),
+                    _buildIconItem(Icons.live_tv, "লাইভ ক্লাস", Colors.red, () => setState(() => _selectedIndex = 1)),
+                    _buildIconItem(Icons.timer, "মক টেস্ট", Colors.deepOrange, () => setState(() => _selectedIndex = 2)),
+                    _buildIconItem(Icons.picture_as_pdf, "পিডিএফ নোটস", Colors.green, () => setState(() => _selectedIndex = 3)),
+                    _buildIconItem(Icons.work, "চাকরির খবর", Colors.teal, () => setState(() => _selectedIndex = 5)),
+                    _buildIconItem(Icons.leaderboard, "র‌্যাঙ্ক বোর্ড", Colors.indigo, () => setState(() => _selectedIndex = 4)),
+                    _buildIconItem(Icons.person, "প্রোফাইল", Colors.blue, () => setState(() => _selectedIndex = 6)),
                   ],
                 ),
-
-                SizedBox(height: 20),
-
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12.0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text("সাম্প্রতিক ঘটনাবলী", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                      TextButton(onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => CAScreen(currentAffairs: currentAffairs))), child: Text("সব দেখুন >", style: TextStyle(color: Color(0xFFD32F2F)))),
-                    ],
-                  ),
-                ),
-
-                currentAffairs.isEmpty
-                    ? Padding(padding: EdgeInsets.all(16), child: Text("শীঘ্রই নতুন আপডেট আসছে..."))
-                    : Container(
-                        height: 190,
-                        child: ListView.builder(
-                          scrollDirection: Axis.horizontal,
-                          padding: EdgeInsets.symmetric(horizontal: 12),
-                          itemCount: currentAffairs.length,
-                          itemBuilder: (ctx, i) {
-                            var ca = currentAffairs[i];
-                            return Container(
-                              width: 230,
-                              margin: EdgeInsets.only(right: 12, bottom: 8),
-                              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)]),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.vertical(top: Radius.circular(10)),
-                                    child: Image.network(
-                                      ca['imageUrl'] ?? '',
-                                      height: 105,
-                                      width: 230,
-                                      fit: BoxFit.cover,
-                                      errorBuilder: (_, __, ___) => Container(height: 105, color: Colors.grey[200], child: Icon(Icons.image, color: Colors.grey)),
-                                    ),
-                                  ),
-                                  Padding(
-                                    padding: const EdgeInsets.all(8.0),
-                                    child: Text(ca['title'] ?? '', maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                                  )
-                                ],
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                SizedBox(height: 30),
+                const SizedBox(height: 40),
               ],
             ),
           )
@@ -526,83 +867,81 @@ class _AddaRootScreenState extends State<AddaRootScreen> {
   Widget _buildIconItem(IconData icon, String title, Color color, VoidCallback onTap) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Container(
-            padding: EdgeInsets.all(10),
+            padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(color: color.withOpacity(0.12), shape: BoxShape.circle),
             child: Icon(icon, color: color, size: 24),
           ),
-          SizedBox(height: 6),
-          Text(title, textAlign: TextAlign.center, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500)),
+          const SizedBox(height: 6),
+          Text(title, textAlign: TextAlign.center, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w500)),
         ],
       ),
     );
   }
 
-  Widget _buildSimplePlaceholder(String title) {
-    return Scaffold(
-      appBar: AppBar(title: Text(title), backgroundColor: Color(0xFFD32F2F)),
-      body: Center(child: Text("$title শীঘ্রই যোগ করা হবে")),
-    );
-  }
-
   Widget _buildProfileTab() {
     return Scaffold(
-      appBar: AppBar(title: Text("প্রোফাইল"), backgroundColor: Color(0xFFD32F2F)),
+      appBar: AppBar(title: const Text("প্রোফাইল"), backgroundColor: const Color(0xFFD32F2F)),
       body: ListView(
         children: [
           UserAccountsDrawerHeader(
-            decoration: BoxDecoration(color: Color(0xFFD32F2F)),
-            accountName: Text("সনৎ কুমার দাস"),
-            accountEmail: Text("সিভিল সার্ভিস পরীক্ষার্থী"),
-            currentAccountPicture: CircleAvatar(backgroundColor: Colors.white, child: Icon(Icons.person, size: 40, color: Color(0xFFD32F2F))),
+            decoration: const BoxDecoration(color: Color(0xFFD32F2F)),
+            accountName: Text(widget.userData['name'], style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            accountEmail: Text("রোল নং: #${widget.userData['roll']} | ফোন: +91 ${widget.userData['phone']}"),
+            currentAccountPicture: CircleAvatar(
+              backgroundColor: Colors.white,
+              backgroundImage: widget.userData['image'].toString().isNotEmpty ? NetworkImage(widget.userData['image']) : null,
+              child: widget.userData['image'].toString().isEmpty ? Text(widget.userData['name'][0].toUpperCase(), style: const TextStyle(fontSize: 26, color: Color(0xFFD32F2F))) : null,
+            ),
           ),
-          ListTile(leading: Icon(Icons.bookmark), title: Text("সংরক্ষিত কুইজ"), onTap: () {}),
-          ListTile(leading: Icon(Icons.history), title: Text("টেস্ট ফলাফল"), onTap: () {}),
-          ListTile(leading: Icon(Icons.info_outline), title: Text("অ্যাপ সম্পর্কে"), onTap: () {}),
+          ListTile(leading: const Icon(Icons.school), title: const Text("টার্গেট পরীক্ষা"), subtitle: Text(widget.userData['exam'])),
+          ListTile(leading: const Icon(Icons.format_list_numbered), title: const Text("অফিসিয়াল রোল নম্বর"), subtitle: Text("Roll #${widget.userData['roll']}")),
+          const Divider(),
+          ListTile(leading: const Icon(Icons.logout, color: Colors.red), title: const Text("লগআউট", style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)), onTap: logout),
         ],
       ),
     );
   }
 }
 
-class CAScreen extends StatelessWidget {
-  final List<Map<String, dynamic>> currentAffairs;
-  CAScreen({required this.currentAffairs});
+// পিডিএফ স্টাডি মেটেরিয়াল স্ক্রিন (ডাউনলোড সহ)
+class StudyNotesScreen extends StatelessWidget {
+  final List<Map<String, dynamic>> notes;
+  const StudyNotesScreen({required this.notes});
+
+  void openPdf(String url) async {
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text("সাম্প্রতিক ঘটনাবলী"), backgroundColor: Color(0xFFD32F2F)),
-      body: currentAffairs.isEmpty
-          ? Center(child: Text("কোনো তথ্য পাওয়া যায়নি!"))
+      appBar: AppBar(title: const Text("পিডিএফ নোটস ও স্টাডি মেটেরিয়াল"), backgroundColor: const Color(0xFFD32F2F)),
+      body: notes.isEmpty
+          ? const Center(child: Text("কোনো নোটস নেই!"))
           : ListView.builder(
-              padding: EdgeInsets.all(12),
-              itemCount: currentAffairs.length,
+              padding: const EdgeInsets.all(12),
+              itemCount: notes.length,
               itemBuilder: (ctx, i) {
-                var item = currentAffairs[i];
+                var n = notes[i];
                 return Card(
-                  margin: EdgeInsets.only(bottom: 12),
-                  elevation: 2,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Image.network(item['imageUrl'] ?? '', width: double.infinity, height: 180, fit: BoxFit.cover, errorBuilder: (_, __, ___) => Container(height: 180, color: Colors.grey[200], child: Icon(Icons.broken_image, size: 40))),
-                      Padding(
-                        padding: EdgeInsets.all(12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(item['title'] ?? '', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                            SizedBox(height: 6),
-                            Text(item['description'] ?? '', style: TextStyle(fontSize: 13, color: Colors.black87)),
-                          ],
-                        ),
-                      )
-                    ],
+                  margin: const EdgeInsets.only(bottom: 12),
+                  child: ListTile(
+                    leading: const CircleAvatar(backgroundColor: Colors.redAccent, child: Icon(Icons.picture_as_pdf, color: Colors.white)),
+                    title: Text(n['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text(n['subtitle'] ?? ''),
+                    trailing: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD32F2F)),
+                      icon: const Icon(Icons.download, size: 16, color: Colors.white),
+                      label: const Text("PDF", style: TextStyle(color: Colors.white)),
+                      onPressed: () => openPdf(n['url'] ?? ''),
+                    ),
                   ),
                 );
               },
@@ -611,108 +950,256 @@ class CAScreen extends StatelessWidget {
   }
 }
 
+// লাইভ ক্লাস স্ক্রিন
+class LiveClassesScreen extends StatelessWidget {
+  final List<Map<String, dynamic>> classes;
+  const LiveClassesScreen({required this.classes});
+
+  void openYouTube(String url) async {
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("ডেইলি লাইভ ক্লাস"), backgroundColor: const Color(0xFFD32F2F)),
+      body: classes.isEmpty
+          ? const Center(child: Text("আজকের কোনো লাইভ ক্লাস নেই!"))
+          : ListView.builder(
+              padding: const EdgeInsets.all(12),
+              itemCount: classes.length,
+              itemBuilder: (ctx, i) {
+                var c = classes[i];
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  child: ListTile(
+                    leading: const CircleAvatar(backgroundColor: Colors.red, child: Icon(Icons.play_arrow, color: Colors.white)),
+                    title: Text(c['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text(c['subtitle'] ?? ''),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.open_in_new, color: Colors.red),
+                      onPressed: () => openYouTube(c['url'] ?? ''),
+                    ),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+// চাকরির বিজ্ঞপ্তি স্ক্রিন (Job Alerts)
+class JobAlertsScreen extends StatelessWidget {
+  final List<Map<String, dynamic>> jobs;
+  const JobAlertsScreen({required this.jobs});
+
+  void openJob(String url) async {
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("চাকরির খবর ও বিজ্ঞপ্তি"), backgroundColor: const Color(0xFFD32F2F)),
+      body: jobs.isEmpty
+          ? const Center(child: Text("বর্তমানে কোনো নতুন চাকরির বিজ্ঞপ্তি নেই!"))
+          : ListView.builder(
+              padding: const EdgeInsets.all(12),
+              itemCount: jobs.length,
+              itemBuilder: (ctx, i) {
+                var j = jobs[i];
+                return Card(
+                  elevation: 2,
+                  margin: const EdgeInsets.only(bottom: 12),
+                  child: ListTile(
+                    leading: const CircleAvatar(backgroundColor: Colors.teal, child: Icon(Icons.work, color: Colors.white)),
+                    title: Text(j['title'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text(j['subtitle'] ?? ''),
+                    trailing: ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.teal),
+                      child: const Text("Apply / Notice", style: TextStyle(color: Colors.white, fontSize: 11)),
+                      onPressed: () => openJob(j['url'] ?? ''),
+                    ),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+// লিডারবোর্ড ও স্টেট র‍্যাঙ্কিং স্ক্রিন
+class LeaderboardScreen extends StatelessWidget {
+  final List<Map<String, dynamic>> users;
+  const LeaderboardScreen({required this.users});
+
+  @override
+  Widget build(BuildContext context) {
+    List sorted = List.from(users);
+    sorted.sort((a, b) => (b['score'] ?? 0).compareTo(a['score'] ?? 0));
+
+    return Scaffold(
+      appBar: AppBar(title: const Text("স্টেট লিডারবোর্ড ও র‍্যাঙ্কিং"), backgroundColor: const Color(0xFFD32F2F)),
+      body: sorted.isEmpty
+          ? const Center(child: Text("কোনো তথ্য নেই!"))
+          : ListView.builder(
+              padding: const EdgeInsets.all(12),
+              itemCount: sorted.length,
+              itemBuilder: (ctx, i) {
+                var u = sorted[i];
+                Color badgeColor = Colors.grey;
+                if (i == 0) badgeColor = Colors.amber;
+                if (i == 1) badgeColor = Colors.blueGrey;
+                if (i == 2) badgeColor = Colors.brown;
+
+                return Card(
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: badgeColor,
+                      child: Text("${i + 1}", style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    ),
+                    title: Text(u['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text("টার্গেট: ${u['exam']} | Roll #${u['roll']}"),
+                    trailing: Text("${u['score'] ?? 0} Pts", style: const TextStyle(color: Color(0xFFD32F2F), fontWeight: FontWeight.bold, fontSize: 16)),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
+// টাইমার ও নেগেটিভ মার্কিং সহ ফুল এক্সাম মোড
 class QuizPlayScreen extends StatefulWidget {
   final List<Map<String, dynamic>> questions;
-  QuizPlayScreen({required this.questions});
+  final String userPhone;
+  const QuizPlayScreen({required this.questions, required this.userPhone});
 
   @override
   _QuizPlayScreenState createState() => _QuizPlayScreenState();
 }
 
 class _QuizPlayScreenState extends State<QuizPlayScreen> {
-  int currentQuestionIndex = 0;
-  int score = 0;
-  int? selectedAnswerIndex;
-  bool isAnswered = false;
+  int currentIdx = 0;
+  double score = 0.0;
+  int? selected;
+  int remainingSeconds = 600;
+  Timer? timer;
 
-  void checkAnswer(int index) {
-    if (isAnswered) return;
-    setState(() {
-      selectedAnswerIndex = index;
-      isAnswered = true;
-      if (index == widget.questions[currentQuestionIndex]['correctIndex']) score++;
+  @override
+  void initState() {
+    super.initState();
+    startTimer();
+  }
+
+  void startTimer() {
+    timer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (remainingSeconds > 0) {
+        setState(() => remainingSeconds--);
+      } else {
+        t.cancel();
+        submitExam();
+      }
     });
   }
 
-  void nextQuestion() {
-    setState(() {
-      if (currentQuestionIndex < widget.questions.length - 1) {
-        currentQuestionIndex++;
-        selectedAnswerIndex = null;
-        isAnswered = false;
-      } else {
-        showDialog(
-          context: context,
-          barrierDismissible: false,
-          builder: (_) => AlertDialog(
-            title: Text("মক টেস্ট সমাপ্ত!"),
-            content: Text("আপনার মোট স্কোর: $score / ${widget.questions.length}"),
-            actions: [
-              TextButton(onPressed: () { Navigator.pop(context); Navigator.pop(context); }, child: Text("ফিরে যান"))
-            ],
-          ),
-        );
-      }
-    });
+  @override
+  void dispose() {
+    timer?.cancel();
+    super.dispose();
+  }
+
+  void submitExam() async {
+    timer?.cancel();
+    await http.patch(
+      Uri.parse("https://target-civil-service-default-rtdb.firebaseio.com/users/${widget.userPhone}.json"),
+      body: jsonEncode({'score': score.toInt()}),
+    );
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        title: const Text("মক টেস্ট রিপোর্ট"),
+        content: Text("মোট স্কোর: ${score.toStringAsFixed(2)} / ${widget.questions.length}\n(ভুল উত্তরে -০.২৫ কাটা হয়েছে)"),
+        actions: [
+          TextButton(onPressed: () { Navigator.pop(context); Navigator.pop(context); }, child: const Text("হোমে ফিরুন"))
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     if (widget.questions.isEmpty) {
       return Scaffold(
-        appBar: AppBar(title: Text("ডেইলি টেস্ট"), backgroundColor: Color(0xFFD32F2F)),
-        body: Center(child: Text("শীঘ্রই নতুন কুইজ আসছে...")),
+        appBar: AppBar(title: const Text("মক টেস্ট"), backgroundColor: const Color(0xFFD32F2F)),
+        body: const Center(child: Text("কোনো প্রশ্ন যোগ করা হয়নি!")),
       );
     }
+    var q = widget.questions[currentIdx];
+    List options = q['options'] ?? [];
 
-    var q = widget.questions[currentQuestionIndex];
-    List<dynamic> options = q['options'] ?? [];
+    int minutes = remainingSeconds ~/ 60;
+    int seconds = remainingSeconds % 60;
 
     return Scaffold(
-      appBar: AppBar(title: Text("ডেইলি মক টেস্ট"), backgroundColor: Color(0xFFD32F2F)),
+      appBar: AppBar(
+        title: Text("সময় বাকি: ${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}"),
+        backgroundColor: const Color(0xFFD32F2F),
+        actions: [
+          TextButton(onPressed: submitExam, child: const Text("জমা দিন", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)))
+        ],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text("প্রশ্ন ${currentQuestionIndex + 1} / ${widget.questions.length}", style: TextStyle(color: Colors.grey[700], fontWeight: FontWeight.bold)),
-            SizedBox(height: 8),
-            Text(q['question'] ?? '', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            SizedBox(height: 18),
-            ...List.generate(options.length, (index) {
-              Color btnColor = Colors.white;
-              if (isAnswered) {
-                if (index == q['correctIndex']) btnColor = Colors.green.shade100;
-                else if (index == selectedAnswerIndex) btnColor = Colors.red.shade100;
-              }
-
-              return Container(
-                margin: EdgeInsets.only(bottom: 10),
-                child: OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                    backgroundColor: btnColor,
-                    padding: EdgeInsets.symmetric(vertical: 14, horizontal: 14),
-                    side: BorderSide(color: Colors.grey.shade300),
-                  ),
-                  onPressed: () => checkAnswer(index),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text("${String.fromCharCode(65 + index)}. ${options[index]}", style: TextStyle(color: Colors.black87, fontSize: 14)),
-                  ),
+            Text("প্রশ্ন ${currentIdx + 1} / ${widget.questions.length} (ভুল উত্তরে: -০.২৫)", style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Text(q['question'] ?? '', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 18),
+            ...List.generate(options.length, (i) => Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: OutlinedButton(
+                style: OutlinedButton.styleFrom(
+                  backgroundColor: selected != null ? (i == q['correctIndex'] ? Colors.green.shade100 : (selected == i ? Colors.red.shade100 : Colors.white)) : Colors.white,
                 ),
-              );
-            }),
-            if (isAnswered) ...[
-              Container(
-                padding: EdgeInsets.all(12),
-                decoration: BoxDecoration(color: Colors.amber.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.amber.shade200)),
-                child: Text("ব্যাখ্যা: ${q['explanation'] ?? 'নেই'}", style: TextStyle(fontSize: 13)),
+                onPressed: selected == null ? () {
+                  setState(() {
+                    selected = i;
+                    if (i == q['correctIndex']) {
+                      score += 1.0;
+                    } else {
+                      score -= 0.25;
+                    }
+                  });
+                } : null,
+                child: Text("${options[i]}"),
               ),
-              Spacer(),
+            )),
+            if (selected != null) ...[
+              const Spacer(),
               ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: Color(0xFFD32F2F), padding: EdgeInsets.symmetric(vertical: 13)),
-                onPressed: nextQuestion,
-                child: Text(currentQuestionIndex == widget.questions.length - 1 ? "ফলাফল দেখুন" : "পরবর্তী প্রশ্ন", style: TextStyle(color: Colors.white)),
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFD32F2F)),
+                onPressed: () {
+                  setState(() {
+                    if (currentIdx < widget.questions.length - 1) {
+                      currentIdx++;
+                      selected = null;
+                    } else {
+                      submitExam();
+                    }
+                  });
+                },
+                child: const Text("পরবর্তী প্রশ্ন", style: TextStyle(color: Colors.white)),
               )
             ]
           ],
