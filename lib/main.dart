@@ -1,61 +1,22 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 // ==========================================
-// ১. কনফিগারেশন
+// ১. ফায়ারবেস ও অ্যাপ কনফিগারেশন
 // ==========================================
 class AppConfig {
   static const String appName = "টার্গেট সিভিল সার্ভিস";
   static const String adminPhone = "6295411997";
   static const String adminEmail = "sanatd214@gmail.com";
   static const String defaultMasterPin = "123456789";
+
+  // আপনার লাইভ ফায়ারবেস ডাটাবেস URL
+  static const String firebaseUrl =
+      "https://target-civil-service-default-rtdb.firebaseio.com";
 }
 
-// ==========================================
-// ডাটা মডেল (মেমোরি স্টেট)
-// ==========================================
-class Question {
-  final String questionText;
-  final List<String> options;
-  final int correctOptionIndex;
-
-  Question({
-    required this.questionText,
-    required this.options,
-    required this.correctOptionIndex,
-  });
-}
-
-class SubjectData {
-  final String name;
-  final List<Question> questions;
-  int testDurationMinutes;
-  int totalQuestionsForTest;
-
-  SubjectData({
-    required this.name,
-    List<Question>? questions,
-    this.testDurationMinutes = 30,
-    this.totalQuestionsForTest = 25,
-  }) : questions = questions ?? [];
-}
-
-// গ্লোবাল ডাটাবেস লিস্ট
-List<SubjectData> globalSubjects = [
-  SubjectData(name: "ইতিহাস", questions: [
-    Question(
-      questionText: "সিন্ধু সভ্যতার প্রধান বন্দর কোনটি ছিল?",
-      options: ["হরপ্পা", "লোথাল", "কালিবঙ্গান", "মহেঞ্জোদাড়ো"],
-      correctOptionIndex: 1,
-    ),
-  ]),
-  SubjectData(name: "ভূগোল"),
-  SubjectData(name: "সংবিধান"),
-];
-
-// ==========================================
-// মেইন ফাংশন
-// ==========================================
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const TargetCivilServiceApp());
@@ -84,7 +45,7 @@ class TargetCivilServiceApp extends StatelessWidget {
 }
 
 // ==========================================
-// স্প্ল্যাশ স্ক্রিন
+// ২. স্প্ল্যাশ স্ক্রিন
 // ==========================================
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -104,12 +65,18 @@ class _SplashScreenState extends State<SplashScreen> {
     await Future.delayed(const Duration(seconds: 1));
     final prefs = await SharedPreferences.getInstance();
     final isAdmin = prefs.getBool('is_admin') ?? false;
+    final phone = prefs.getString('user_phone');
 
     if (!mounted) return;
     if (isAdmin) {
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (context) => const AdminDashboardScreen()),
+      );
+    } else if (phone != null && phone.isNotEmpty) {
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const StudentHomeScreen()),
       );
     } else {
       Navigator.pushReplacement(
@@ -134,7 +101,7 @@ class _SplashScreenState extends State<SplashScreen> {
 }
 
 // ==========================================
-// লগইন ও পিন ভেরিফিকেশন
+// ৩. অথেনটিকেশন (ইউজার ও অ্যাডমিন)
 // ==========================================
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -144,10 +111,12 @@ class AuthScreen extends StatefulWidget {
 }
 
 class _AuthScreenState extends State<AuthScreen> {
-  final TextEditingController _phoneController = TextEditingController();
+  final _phoneController = TextEditingController();
+  final _nameController = TextEditingController();
+  bool _isLoading = false;
 
   void _showPinDialog() {
-    final TextEditingController pinController = TextEditingController();
+    final pinController = TextEditingController();
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -157,7 +126,8 @@ class _AuthScreenState extends State<AuthScreen> {
           controller: pinController,
           keyboardType: TextInputType.number,
           obscureText: true,
-          decoration: const InputDecoration(hintText: "৯ সংখ্যার পিন (123456789)"),
+          maxLength: 9,
+          decoration: const InputDecoration(hintText: "৯ সংখ্যার পিন লিখুন"),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text("বাতিল")),
@@ -167,6 +137,7 @@ class _AuthScreenState extends State<AuthScreen> {
                 Navigator.pop(context);
                 final prefs = await SharedPreferences.getInstance();
                 await prefs.setBool('is_admin', true);
+                await prefs.setString('user_phone', AppConfig.adminPhone);
                 if (!mounted) return;
                 Navigator.pushReplacement(
                   context,
@@ -185,14 +156,61 @@ class _AuthScreenState extends State<AuthScreen> {
     );
   }
 
+  Future<void> _registerUser() async {
+    final name = _nameController.text.trim();
+    final phone = _phoneController.text.trim();
+
+    if (phone == AppConfig.adminPhone) {
+      _showPinDialog();
+      return;
+    }
+
+    if (name.isEmpty || phone.length != 10) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("সঠিক নাম এবং ১০ সংখ্যার ফোন নম্বর দিন")),
+      );
+      return;
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      // ফায়ারবেস ক্লাউডে ইউজার সেভ করা
+      final url = Uri.parse("${AppConfig.firebaseUrl}/users/$phone.json");
+      await http.put(
+        url,
+        body: jsonEncode({
+          "name": name,
+          "phone": phone,
+          "createdAt": DateTime.now().toIso8601String(),
+        }),
+      );
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('user_name', name);
+      await prefs.setString('user_phone', phone);
+
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (context) => const StudentHomeScreen()),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("ইন্টারনেট এরর: $e")),
+      );
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
           children: [
+            const SizedBox(height: 60),
             const Icon(Icons.school, size: 70, color: Colors.deepPurple),
             const SizedBox(height: 16),
             const Text(
@@ -201,12 +219,18 @@ class _AuthScreenState extends State<AuthScreen> {
             ),
             const SizedBox(height: 30),
             TextField(
+              controller: _nameController,
+              decoration: const InputDecoration(labelText: "পুরো নাম", border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 14),
+            TextField(
               controller: _phoneController,
               keyboardType: TextInputType.phone,
+              maxLength: 10,
               decoration: const InputDecoration(
                 labelText: "মোবাইল নম্বর",
                 border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.phone),
+                counterText: "",
               ),
             ),
             const SizedBox(height: 20),
@@ -215,16 +239,10 @@ class _AuthScreenState extends State<AuthScreen> {
               height: 50,
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple),
-                onPressed: () {
-                  if (_phoneController.text.trim() == AppConfig.adminPhone) {
-                    _showPinDialog();
-                  } else {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("ছাত্র রেজিস্ট্রেশন পেজ চালু হচ্ছে...")),
-                    );
-                  }
-                },
-                child: const Text("প্রবেশ করুন", style: TextStyle(color: Colors.white, fontSize: 16)),
+                onPressed: _isLoading ? null : _registerUser,
+                child: _isLoading
+                    ? const CircularProgressIndicator(color: Colors.white)
+                    : const Text("প্রবেশ করুন", style: TextStyle(color: Colors.white, fontSize: 16)),
               ),
             ),
           ],
@@ -235,7 +253,7 @@ class _AuthScreenState extends State<AuthScreen> {
 }
 
 // ==========================================
-// সুপার অ্যাডমিন ড্যাশবোর্ড (সম্পূর্ণ কার্যকর)
+// ৪. সুপার অ্যাডমিন ড্যাশবোর্ড (অনলাইন ক্লাউড কন্ট্রোল)
 // ==========================================
 class AdminDashboardScreen extends StatefulWidget {
   const AdminDashboardScreen({super.key});
@@ -245,38 +263,72 @@ class AdminDashboardScreen extends StatefulWidget {
 }
 
 class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
-  // নতুন সাবজেক্ট তৈরির পপআপ
+  List<Map<String, dynamic>> _subjects = [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchSubjects();
+  }
+
+  // ফায়ারবেস থেকে সব বিষয় ও প্রশ্ন টেনে আনা
+  Future<void> _fetchSubjects() async {
+    setState(() => _isLoading = true);
+    try {
+      final url = Uri.parse("${AppConfig.firebaseUrl}/questions.json");
+      final response = await http.get(url);
+
+      if (response.statusCode == 200 && response.body != "null") {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        final List<Map<String, dynamic>> loaded = [];
+
+        data.forEach((key, value) {
+          loaded.add({
+            "id": key,
+            "name": value["name"] ?? key,
+            "duration": value["duration"] ?? 30,
+            "questions": value["items"] ?? {},
+          });
+        });
+        setState(() => _subjects = loaded);
+      } else {
+        setState(() => _subjects = []);
+      }
+    } catch (e) {
+      debugPrint("Fetch error: $e");
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  // নতুন বিষয় তৈরি করে সরাসরি ফায়ারবেসে পুশ করা
   void _createNewSubjectDialog() {
-    final TextEditingController subjectNameController = TextEditingController();
+    final controller = TextEditingController();
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text("নতুন বিষয় তৈরি করুন"),
         content: TextField(
-          controller: subjectNameController,
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: "বিষয়ের নাম লিখুন (উদাঃ অর্থনীতি)",
-            border: OutlineInputBorder(),
-          ),
+          controller: controller,
+          decoration: const InputDecoration(hintText: "উদাঃ আধুনিক ভারত"),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text("বাতিল")),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple),
-            onPressed: () {
-              final name = subjectNameController.text.trim();
+            onPressed: () async {
+              final name = controller.text.trim();
               if (name.isNotEmpty) {
-                setState(() {
-                  globalSubjects.add(SubjectData(name: name));
-                });
                 Navigator.pop(context);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text("'$name' বিষয় যুক্ত হয়েছে!")),
+                final url = Uri.parse("${AppConfig.firebaseUrl}/questions/$name.json");
+                await http.put(
+                  url,
+                  body: jsonEncode({"name": name, "duration": 30}),
                 );
+                _fetchSubjects();
               }
             },
-            child: const Text("সেভ করুন", style: TextStyle(color: Colors.white)),
+            child: const Text("অনলাইনে সেভ করুন"),
           ),
         ],
       ),
@@ -287,9 +339,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("সুপার অ্যাডমিন প্যানেল"),
+        title: const Text("সুপার অ্যাডমিন (ক্লাউড মোড)"),
         backgroundColor: Colors.black87,
         actions: [
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _fetchSubjects),
           IconButton(
             icon: const Icon(Icons.logout),
             onPressed: () async {
@@ -310,178 +363,87 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         label: const Text("নতুন বিষয় তৈরি", style: TextStyle(color: Colors.white)),
         onPressed: _createNewSubjectDialog,
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: Colors.deepPurple.shade50,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.deepPurple.shade200),
-              ),
-              child: const Row(
-                children: [
-                  Icon(Icons.info_outline, color: Colors.deepPurple),
-                  SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      "যেকোনো বিষয়ে ট্যাপ করে ভেতরে ঢুকুন। সেখানে ১০০টি করে প্রশ্ন এবং মক টেস্টের সময় নিয়ন্ত্রণ করতে পারবেন।",
-                      style: TextStyle(fontSize: 13, color: Colors.black87),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              "আপনার বিষয়সমূহ (Subject Folders):",
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 10),
-            Expanded(
-              child: ListView.builder(
-                itemCount: globalSubjects.length,
-                itemBuilder: (context, index) {
-                  final subject = globalSubjects[index];
-                  return Card(
-                    elevation: 2,
-                    margin: const EdgeInsets.only(bottom: 12),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    child: ListTile(
-                      leading: const CircleAvatar(
-                        backgroundColor: Colors.deepPurple,
-                        child: Icon(Icons.folder, color: Colors.white),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _subjects.isEmpty
+              ? const Center(child: Text("কোনো বিষয় পাওয়া যায়নি। নতুন বিষয় তৈরি করুন।"))
+              : ListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: _subjects.length,
+                  itemBuilder: (context, index) {
+                    final sub = _subjects[index];
+                    final qCount = (sub["questions"] as Map).length;
+                    return Card(
+                      child: ListTile(
+                        leading: const CircleAvatar(
+                          backgroundColor: Colors.deepPurple,
+                          child: Icon(Icons.folder, color: Colors.white),
+                        ),
+                        title: Text(sub["name"], style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text("অনলাইন প্রশ্ন: $qCount টি | সময়: ${sub["duration"]} মিনিট"),
+                        trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                        onTap: () async {
+                          await Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) => AdminSubjectDetailScreen(subject: sub),
+                            ),
+                          );
+                          _fetchSubjects();
+                        },
                       ),
-                      title: Text(
-                        subject.name,
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                      ),
-                      subtitle: Text("মোট প্রশ্ন: ${subject.questions.length} টি | সময়: ${subject.testDurationMinutes} মিনিট"),
-                      trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-                      onTap: () async {
-                        await Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => SubjectDetailScreen(subject: subject),
-                          ),
-                        );
-                        setState(() {}); // ফিরে আসার পর আপডেট হবে
-                      },
-                    ),
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
+                    );
+                  },
+                ),
     );
   }
 }
 
 // ==========================================
-// বিষয়ের ভেতরের স্ক্রিন (প্রশ্ন যোগ ও মক টেস্ট কন্ট্রোল)
+// ৫. বিষয়ের ভেতরে প্রশ্ন যোগ স্ক্রিন (অ্যাডমিন)
 // ==========================================
-class SubjectDetailScreen extends StatefulWidget {
-  final SubjectData subject;
-
-  const SubjectDetailScreen({super.key, required this.subject});
+class AdminSubjectDetailScreen extends StatefulWidget {
+  final Map<String, dynamic> subject;
+  const AdminSubjectDetailScreen({super.key, required this.subject});
 
   @override
-  State<SubjectDetailScreen> createState() => _SubjectDetailScreenState();
+  State<AdminSubjectDetailScreen> createState() => _AdminSubjectDetailScreenState();
 }
 
-class _SubjectDetailScreenState extends State<SubjectDetailScreen> {
-  // সময় ও প্রশ্ন সংখ্যা কন্ট্রোল ডায়ালগ
-  void _editMockTestSettings() {
-    final durationController = TextEditingController(text: widget.subject.testDurationMinutes.toString());
-    final countController = TextEditingController(text: widget.subject.totalQuestionsForTest.toString());
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text("${widget.subject.name} - টেস্ট কন্ট্রোল"),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: durationController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: "টেস্টের সময় (মিনিটে)"),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: countController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: "মক টেস্টে কয়টি প্রশ্ন থাকবে"),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("বাতিল")),
-          ElevatedButton(
-            onPressed: () {
-              setState(() {
-                widget.subject.testDurationMinutes = int.tryParse(durationController.text) ?? 30;
-                widget.subject.totalQuestionsForTest = int.tryParse(countController.text) ?? 25;
-              });
-              Navigator.pop(context);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text("টেস্ট সেটিংস আপডেট করা হয়েছে!")),
-              );
-            },
-            child: const Text("সেভ"),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // প্রশ্ন যোগ করার ডায়ালগ
-  void _addNewQuestionDialog() {
-    final qController = TextEditingController();
-    final opt1 = TextEditingController();
-    final opt2 = TextEditingController();
-    final opt3 = TextEditingController();
-    final opt4 = TextEditingController();
-    int correctIndex = 0;
+class _AdminSubjectDetailScreenState extends State<AdminSubjectDetailScreen> {
+  void _addQuestionDialog() {
+    final qCtrl = TextEditingController();
+    final optA = TextEditingController();
+    final optB = TextEditingController();
+    final optC = TextEditingController();
+    final optD = TextEditingController();
+    int correct = 0;
 
     showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text("নতুন প্রশ্ন যোগ করুন"),
+          title: const Text("অনলাইনে প্রশ্ন যোগ করুন"),
           content: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(
-                  controller: qController,
-                  decoration: const InputDecoration(labelText: "প্রশ্নটি লিখুন"),
-                ),
-                TextField(controller: opt1, decoration: const InputDecoration(labelText: "অপশন A")),
-                TextField(controller: opt2, decoration: const InputDecoration(labelText: "অপশন B")),
-                TextField(controller: opt3, decoration: const InputDecoration(labelText: "অপশন C")),
-                TextField(controller: opt4, decoration: const InputDecoration(labelText: "অপশন D")),
-                const SizedBox(height: 12),
-                const Text("সঠিক উত্তর নির্বাচন করুন:", style: TextStyle(fontWeight: FontWeight.bold)),
+                TextField(controller: qCtrl, decoration: const InputDecoration(labelText: "প্রশ্ন")),
+                TextField(controller: optA, decoration: const InputDecoration(labelText: "অপশন A")),
+                TextField(controller: optB, decoration: const InputDecoration(labelText: "অপশন B")),
+                TextField(controller: optC, decoration: const InputDecoration(labelText: "অপশন C")),
+                TextField(controller: optD, decoration: const InputDecoration(labelText: "অপশন D")),
+                const SizedBox(height: 10),
                 DropdownButton<int>(
-                  value: correctIndex,
+                  value: correct,
                   isExpanded: true,
                   items: const [
-                    DropdownMenuItem(value: 0, child: Text("অপশন A")),
-                    DropdownMenuItem(value: 1, child: Text("অপশন B")),
-                    DropdownMenuItem(value: 2, child: Text("অপশন C")),
-                    DropdownMenuItem(value: 3, child: Text("অপশন D")),
+                    DropdownMenuItem(value: 0, child: Text("সঠিক উত্তর: A")),
+                    DropdownMenuItem(value: 1, child: Text("সঠিক উত্তর: B")),
+                    DropdownMenuItem(value: 2, child: Text("সঠিক উত্তর: C")),
+                    DropdownMenuItem(value: 3, child: Text("সঠিক উত্তর: D")),
                   ],
-                  onChanged: (val) {
-                    if (val != null) {
-                      setDialogState(() => correctIndex = val);
-                    }
-                  },
+                  onChanged: (v) => setDialogState(() => correct = v!),
                 ),
               ],
             ),
@@ -489,21 +451,30 @@ class _SubjectDetailScreenState extends State<SubjectDetailScreen> {
           actions: [
             TextButton(onPressed: () => Navigator.pop(context), child: const Text("বাতিল")),
             ElevatedButton(
-              onPressed: () {
-                if (qController.text.isNotEmpty && opt1.text.isNotEmpty) {
-                  setState(() {
-                    widget.subject.questions.add(
-                      Question(
-                        questionText: qController.text,
-                        options: [opt1.text, opt2.text, opt3.text, opt4.text],
-                        correctOptionIndex: correctIndex,
-                      ),
-                    );
-                  });
+              onPressed: () async {
+                if (qCtrl.text.isNotEmpty && optA.text.isNotEmpty) {
                   Navigator.pop(context);
+                  final subName = widget.subject["name"];
+                  final url = Uri.parse("${AppConfig.firebaseUrl}/questions/$subName/items.json");
+
+                  await http.post(
+                    url,
+                    body: jsonEncode({
+                      "q": qCtrl.text.trim(),
+                      "options": [optA.text.trim(), optB.text.trim(), optC.text.trim(), optD.text.trim()],
+                      "answer": correct,
+                    }),
+                  );
+
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("প্রশ্ন সবার জন্য লাইভ সেভ হয়েছে!")),
+                    );
+                    Navigator.pop(context);
+                  }
                 }
               },
-              child: const Text("যোগ করুন"),
+              child: const Text("লাইভ সেভ করুন"),
             ),
           ],
         ),
@@ -513,79 +484,128 @@ class _SubjectDetailScreenState extends State<SubjectDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final Map questions = widget.subject["questions"] as Map;
     return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.subject.name),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.timer),
-            tooltip: "টেস্ট কন্ট্রোল",
-            onPressed: _editMockTestSettings,
-          ),
-        ],
-      ),
+      appBar: AppBar(title: Text("${widget.subject["name"]} - প্রশ্ন")),
       floatingActionButton: FloatingActionButton(
         backgroundColor: Colors.deepPurple,
-        onPressed: _addNewQuestionDialog,
+        onPressed: _addQuestionDialog,
         child: const Icon(Icons.add, color: Colors.white),
       ),
-      body: Column(
-        children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(12),
-            color: Colors.amber.shade100,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  "টেস্ট সময়: ${widget.subject.testDurationMinutes} মিনিট | প্রশ্ন সংখ্যা: ${widget.subject.totalQuestionsForTest}",
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                ),
-                TextButton(
-                  onPressed: _editMockTestSettings,
-                  child: const Text("পরিবর্তন"),
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: widget.subject.questions.isEmpty
-                ? const Center(child: Text("এখনো কোনো প্রশ্ন যোগ করা হয়নি। নিচে + বাটনে চাপ দিন।"))
-                : ListView.builder(
-                    itemCount: widget.subject.questions.length,
-                    itemBuilder: (context, index) {
-                      final q = widget.subject.questions[index];
-                      return Card(
-                        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        child: Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                "প্রশ্ন ${index + 1}: ${q.questionText}",
-                                style: const TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                              const SizedBox(height: 6),
-                              Text("A) ${q.options[0]}"),
-                              Text("B) ${q.options[1]}"),
-                              Text("C) ${q.options[2]}"),
-                              Text("D) ${q.options[3]}"),
-                              const SizedBox(height: 4),
-                              Text(
-                                "সঠিক উত্তর: অপশন ${String.fromCharCode(65 + q.correctOptionIndex)}",
-                                style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
+      body: questions.isEmpty
+          ? const Center(child: Text("কোনো প্রশ্ন নেই। + বাটনে চাপ দিয়ে যোগ করুন।"))
+          : ListView(
+              padding: const EdgeInsets.all(12),
+              children: questions.values.map((item) {
+                return Card(
+                  child: ListTile(
+                    title: Text(item["q"] ?? "", style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text("সঠিক উত্তর: অপশন ${String.fromCharCode(65 + (item["answer"] as int))}"),
                   ),
+                );
+              }).toList(),
+            ),
+    );
+  }
+}
+
+// ==========================================
+// ৬. ছাত্রছাত্রীদের লাইভ হোম ও এক্সাম স্ক্রিন
+// ==========================================
+class StudentHomeScreen extends StatefulWidget {
+  const StudentHomeScreen({super.key});
+
+  @override
+  State<StudentHomeScreen> createState() => _StudentHomeScreenState();
+}
+
+class _StudentHomeScreenState extends State<StudentHomeScreen> {
+  List<Map<String, dynamic>> _liveSubjects = [];
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLiveSubjects();
+  }
+
+  Future<void> _loadLiveSubjects() async {
+    setState(() => _isLoading = true);
+    try {
+      final url = Uri.parse("${AppConfig.firebaseUrl}/questions.json");
+      final response = await http.get(url);
+
+      if (response.statusCode == 200 && response.body != "null") {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        final List<Map<String, dynamic>> list = [];
+        data.forEach((k, v) {
+          list.add({
+            "name": v["name"] ?? k,
+            "duration": v["duration"] ?? 30,
+            "questions": v["items"] ?? {},
+          });
+        });
+        setState(() => _liveSubjects = list);
+      }
+    } catch (e) {
+      debugPrint("Load error: $e");
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text(AppConfig.appName),
+        actions: [
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _loadLiveSubjects),
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: () async {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.clear();
+              if (!context.mounted) return;
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (context) => const AuthScreen()),
+              );
+            },
           ),
         ],
       ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _liveSubjects.isEmpty
+              ? const Center(child: Text("অ্যাডমিন এখনো কোনো বিষয় আপলোড করেনি।"))
+              : ListView.builder(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: _liveSubjects.length,
+                  itemBuilder: (context, index) {
+                    final sub = _liveSubjects[index];
+                    final qCount = (sub["questions"] as Map).length;
+                    return Card(
+                      elevation: 2,
+                      child: ListTile(
+                        leading: const Icon(Icons.quiz, color: Colors.deepPurple, size: 36),
+                        title: Text(sub["name"], style: const TextStyle(fontWeight: FontWeight.bold)),
+                        subtitle: Text("মোট প্রশ্ন: $qCount টি | সময়: ${sub["duration"]} মিনিট"),
+                        trailing: ElevatedButton(
+                          style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple),
+                          onPressed: qCount == 0
+                              ? null
+                              : () {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(content: Text("${sub["name"]} পরীক্ষা চালু হচ্ছে...")),
+                                  );
+                                },
+                          child: const Text("টেস্ট দিন", style: TextStyle(color: Colors.white)),
+                        ),
+                      ),
+                    );
+                  },
+                ),
     );
   }
 }
