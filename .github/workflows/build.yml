@@ -27,7 +27,7 @@ jobs:
           cache: true
 
       - name: Recreate Android Project Structure
-        run: flutter create . --platforms=android --org com.targetcivilservice
+        run: flutter create --project-name target_civil_service --platforms=android .
 
       - name: Install Dependencies
         run: flutter pub get
